@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 from homeassistant.components.sensor import (
     SensorDeviceClass,
     SensorEntity,
+    SensorEntityDescription,
     SensorStateClass,
 )
 from homeassistant.const import (
@@ -130,7 +131,8 @@ class WetterOnlineSensor(
         self._value_fn = value_fn
         self._attrs_fn = attrs_fn
         self._attr_unique_id = f"{coordinator.data.location.gid}_{key}"
-        self._attr_translation_key = key
+        # The name is used when no translation exists, e.g. for new WetterOnline pollen types.
+        self.entity_description = SensorEntityDescription(key=key, translation_key=key, name=name)
         self._attr_device_info = coordinator.device_info
         self._attr_device_class = device_class
         self._attr_state_class = state_class

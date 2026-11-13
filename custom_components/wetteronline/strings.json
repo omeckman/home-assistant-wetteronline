@@ -64,6 +64,7 @@
       "pollen_erle": {"name": "Pollen alder"},
       "pollen_esche": {"name": "Pollen ash"},
       "pollen_graeser": {"name": "Pollen grasses"},
+      "pollen_hasel": {"name": "Pollen hazel"},
       "pollen_pappel": {"name": "Pollen poplar"},
       "pollen_roggen": {"name": "Pollen rye"},
       "pollen_ulme": {"name": "Pollen elm"},
