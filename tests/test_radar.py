@@ -1,7 +1,7 @@
 """Radar projection tests."""
 
 import base64
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from io import BytesIO
 from unittest.mock import AsyncMock
 from urllib.parse import parse_qs, urlparse
@@ -15,12 +15,15 @@ from PIL import Image
 from custom_components.wetteronline.camera import (
     CLOUDS,
     CURRENT,
+    IN_2_DAYS,
+    IN_3_DAYS,
     TODAY,
     TOMORROW,
     WEATHER,
     RadarRenderer,
     Timeline,
     _label,
+    _step_time,
     _world,
 )
 
@@ -169,30 +172,65 @@ async def test_cloud_radar_uses_cloud_tiles_and_wetteronline_map() -> None:
     assert "i|1;;0;0|geo/overlay/v29/ZL8/512/136_82.png" in descriptors
 
 
+def _hours(start: datetime, count: int, minutes: int = 60) -> list[dict]:
+    return [
+        {"id": f"{start + timedelta(minutes=minutes * index):%Y%m%d-%H%M}-1"}
+        for index in range(count)
+    ]
+
+
+async def test_today_combines_observations_since_midnight_with_forecast(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    await hass.config.async_set_time_zone("Europe/Berlin")
+    freezer.move_to("2026-11-13T07:50:00+00:00")  # 08:50 local
+    # Observations every 5 minutes from 23:30 local, forecast hourly from 09:00 local.
+    past = _hours(datetime(2026, 11, 12, 22, 30, tzinfo=UTC), 105, minutes=5)
+    forecast = _hours(datetime(2026, 11, 13, 8, tzinfo=UTC), 25)
+    metadata = {"periodLast12h": {"timesteps": past}, "periodPrognose24h": {"timesteps": forecast}}
+    async with ClientSession() as session:
+        renderer = RadarRenderer(session, 52.517, 13.4)
+        renderer._metadata = AsyncMock(side_effect=metadata.get)  # type: ignore[method-assign]
+
+        steps = await renderer._animation_steps(TODAY, dt_util.now())
+
+    assert [call.args[0] for call in renderer._metadata.await_args_list] == [
+        "periodLast12h",
+        "periodPrognose24h",
+    ]
+    local_hours = [dt_util.as_local(_step_time(step["id"])).hour for step in steps]
+    assert local_hours == list(range(24))
+
+
 async def test_tomorrow_animation_uses_local_calendar_day(
     hass: HomeAssistant, freezer: FrozenDateTimeFactory
 ) -> None:
     await hass.config.async_set_time_zone("Europe/Berlin")
     freezer.move_to("2026-11-13T10:00:00+00:00")
-    steps = [
-        {"id": step_id}
-        for step_id in (
-            "20261113-2200-1",  # 23:00 today
-            "20261113-2300-1",  # 00:00 tomorrow
-            "20261114-2200-1",  # 23:00 tomorrow
-            "20261114-2300-1",  # 00:00 day after tomorrow
-        )
-    ]
+    steps = _hours(datetime(2026, 11, 13, 22, tzinfo=UTC), 74)  # 23:00 today to 00:00 + 4
     async with ClientSession() as session:
         renderer = RadarRenderer(session, 52.517, 13.4)
+        renderer._metadata = AsyncMock(  # type: ignore[method-assign]
+            return_value={"defaultIndex": 0, "timesteps": steps}
+        )
 
-    assert renderer._animation_steps(TOMORROW, {"timesteps": steps}) == steps[1:3]
-    assert renderer._animation_steps(TODAY, {"timesteps": steps}) == steps
-    assert renderer._animation_steps(CURRENT, {"defaultIndex": 0, "timesteps": steps}) == steps
+        tomorrow = await renderer._animation_steps(TOMORROW, dt_util.now())
+        in_2_days = await renderer._animation_steps(IN_2_DAYS, dt_util.now())
+        in_3_days = await renderer._animation_steps(IN_3_DAYS, dt_util.now())
+        current = await renderer._animation_steps(CURRENT, dt_util.now())
+
+    assert tomorrow == steps[1:25]
+    assert in_2_days == steps[25:49]
+    assert in_3_days == steps[49:73]
+    assert current == steps[:7]
 
 
-async def test_forecast_animation_loops_before_dashboard_refresh() -> None:
-    steps = [{"id": f"20261114-{hour:02d}00-1"} for hour in range(24)]
+async def test_forecast_animation_loops_before_dashboard_refresh(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    await hass.config.async_set_time_zone("Europe/Berlin")
+    freezer.move_to("2026-11-13T10:00:00+00:00")
+    steps = _hours(datetime(2026, 11, 13, 23, tzinfo=UTC), 24)
     async with ClientSession() as session:
         renderer = RadarRenderer(session, 52.517, 13.4)
         renderer._metadata = AsyncMock(  # type: ignore[method-assign]
@@ -203,7 +241,7 @@ async def test_forecast_animation_loops_before_dashboard_refresh() -> None:
             return_value=[b"", b"", b"", b""]
         )
 
-        animation = await renderer.animation(TODAY)
+        animation = await renderer.animation(TOMORROW)
 
     assert animation is not None
     image = Image.open(BytesIO(animation))
@@ -221,16 +259,17 @@ async def test_frame_label_uses_local_weekday_and_language(hass: HomeAssistant) 
     assert RadarRenderer(None, 0, 0, language="fr").language == "en"  # type: ignore[arg-type]
 
 
-def test_timeline_marks_now() -> None:
-    now = datetime(2026, 11, 13, 5, 35, tzinfo=UTC)
+async def test_timeline_marks_now(hass: HomeAssistant) -> None:
+    await hass.config.async_set_time_zone("Europe/Berlin")
+    now = datetime(2026, 11, 13, 11, 0, tzinfo=UTC)  # 12:00 local
     current = [now - timedelta(minutes=90), now + timedelta(minutes=90)]
-    today = [datetime(2026, 11, 13, 6, tzinfo=UTC), datetime(2026, 11, 14, 6, tzinfo=UTC)]
-    tomorrow = [datetime(2026, 11, 13, 23, tzinfo=UTC), datetime(2026, 11, 14, 22, tzinfo=UTC)]
+    today = Timeline.for_day(dt_util.as_local(now).date(), now)
 
     assert Timeline.for_frames(current, now).position(now) == 0.5
-    # Forecasts start at the next full hour, so the bar is extended back to now.
-    assert Timeline.for_frames(today, now) == Timeline(now, today[-1], now)
-    assert Timeline.for_frames(tomorrow, now).now is None
+    assert dt_util.as_local(today.start).hour == 0
+    assert today.end - today.start == timedelta(hours=24)
+    assert today.position(now) == 0.5
+    assert Timeline.for_day(date(2026, 11, 14), now).now is None
 
 
 async def test_timeline_ticks_use_local_hours(hass: HomeAssistant) -> None:
@@ -241,3 +280,5 @@ async def test_timeline_ticks_use_local_hours(hass: HomeAssistant) -> None:
 
     local_hours = [dt_util.as_local(tick).hour for tick in timeline.ticks()]
     assert local_hours == [0, 6, 12, 18]
+    day = Timeline.for_day(date(2026, 11, 14), datetime(2026, 11, 13, tzinfo=UTC))
+    assert [dt_util.as_local(tick).hour for tick in day.ticks()] == [0, 6, 12, 18, 0]

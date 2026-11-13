@@ -8,7 +8,7 @@ import math
 from collections import defaultdict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from functools import cache
 from io import BytesIO
 from typing import Any, override
@@ -72,6 +72,8 @@ class RadarPeriod:
     key: str
     api_name: str
     max_age: timedelta
+    day_offset: int | None = None
+    enabled_default: bool = True
 
 
 RAIN_TILES = RadarTiles(key="rain", composite_type="r", tile_suffix="/sprite")
@@ -99,8 +101,16 @@ WEATHER = RadarLayer(
     credits="WetterOnline",
 )
 CURRENT = RadarPeriod("animation", "periodCurrentLowRes", RADAR_INTERVAL)
-TODAY = RadarPeriod("today", "periodPrognose24h", timedelta(minutes=30))
-TOMORROW = RadarPeriod("tomorrow", "periodTomorrow", timedelta(minutes=30))
+TODAY = RadarPeriod("today", "periodPrognose24h", timedelta(minutes=30), day_offset=0)
+TOMORROW = RadarPeriod("tomorrow", "periodTomorrow", timedelta(minutes=30), day_offset=1)
+IN_2_DAYS = RadarPeriod(
+    "in_2_days", "periodDayThree", timedelta(minutes=30), day_offset=2, enabled_default=False
+)
+IN_3_DAYS = RadarPeriod(
+    "in_3_days", "periodDayFour", timedelta(minutes=30), day_offset=3, enabled_default=False
+)
+# Observed radar periods for today's hours before now, smallest download first.
+PAST_PERIODS = ((6, "periodLast6h"), (12, "periodLast12h"), (24, "periodLast24h"))
 
 
 def _world(latitude: float, longitude: float, zoom: int = 8) -> tuple[float, float]:
@@ -124,6 +134,16 @@ def _step_time(step_id: str) -> datetime | None:
         return None
 
 
+def _hourly_steps(steps: list[dict[str, Any]], day: date) -> list[dict[str, Any]]:
+    """Return the first step for every local full hour of a calendar day."""
+    by_time: dict[datetime, dict[str, Any]] = {}
+    for step in steps:
+        time = _step_time(step["id"])
+        if time and (local := dt_util.as_local(time)).date() == day and local.minute == 0:
+            by_time.setdefault(time, step)
+    return [by_time[time] for time in sorted(by_time)]
+
+
 def _label(time: datetime, language: str) -> str:
     local = dt_util.as_local(time)
     return f"{WEEKDAYS[language][local.weekday()]} {local:%H:%M}"
@@ -144,10 +164,14 @@ class Timeline:
 
     @classmethod
     def for_frames(cls, times: list[datetime], now: datetime) -> Timeline:
-        """Span the frames and include now when a forecast starts at the next hour."""
-        start, end = times[0], times[-1]
-        if timedelta(0) < start - now <= timedelta(hours=1):
-            start = now
+        """Span the frames and mark now when it falls inside them."""
+        return cls(times[0], times[-1], now if times[0] <= now <= times[-1] else None)
+
+    @classmethod
+    def for_day(cls, day: date, now: datetime) -> Timeline:
+        """Span a local calendar day from 00:00 to 24:00."""
+        start = dt_util.start_of_local_day(day)
+        end = dt_util.start_of_local_day(day + timedelta(days=1))
         return cls(start, end, now if start <= now <= end else None)
 
     def position(self, time: datetime) -> float:
@@ -227,9 +251,9 @@ class RadarRenderer:
             response.raise_for_status()
             return await response.json()
 
-    async def _metadata(self, period: RadarPeriod) -> dict[str, Any]:
+    async def _metadata(self, period: str) -> dict[str, Any]:
         return await self._get_json(
-            {"lg": "wr", "newMetadata": "true", "period": period.api_name, "type": "period"}
+            {"lg": "wr", "newMetadata": "true", "period": period, "type": "period"}
         )
 
     async def _fetch(self, url: str) -> bytes:
@@ -419,22 +443,23 @@ class RadarRenderer:
             (frame_x - 12, y - 5, frame_x + 12, y + 19), fill=ACCENT, outline="white", width=3
         )
 
-    def _animation_steps(
-        self, period: RadarPeriod, metadata: dict[str, Any]
-    ) -> list[dict[str, Any]]:
-        steps: list[dict[str, Any]] = metadata["timesteps"]
-        if period is CURRENT:
+    async def _animation_steps(self, period: RadarPeriod, now: datetime) -> list[dict[str, Any]]:
+        if period.day_offset is None:
+            metadata = await self._metadata(period.api_name)
             index = int(metadata["defaultIndex"])
+            steps: list[dict[str, Any]] = metadata["timesteps"]
             return steps[max(0, index - 6) : index + 7]
-        if period is TOMORROW:
-            # WetterOnline delivers several days and filters them to the local calendar day.
-            tomorrow = dt_util.now().date() + timedelta(days=1)
-            return [
-                step
-                for step in steps
-                if (time := _step_time(step["id"])) and dt_util.as_local(time).date() == tomorrow
-            ]
-        return steps
+        # WetterOnline forecasts cover several days and are filtered to the local calendar day.
+        names = [period.api_name]
+        if period.day_offset == 0:
+            # Today also shows the observed hours since midnight.
+            hours = (now - dt_util.start_of_local_day(now)).total_seconds() / 3600
+            names.insert(
+                0, next((name for limit, name in PAST_PERIODS if hours <= limit), names[0])
+            )
+        metadata_list = await asyncio.gather(*(self._metadata(name) for name in names))
+        steps = [step for metadata in metadata_list for step in metadata["timesteps"]]
+        return _hourly_steps(steps, now.date() + timedelta(days=period.day_offset))
 
     async def _cached(
         self, key: str, max_age: timedelta, render: Callable[[], Awaitable[bytes | None]]
@@ -466,7 +491,7 @@ class RadarRenderer:
         )
 
     async def _render_current(self) -> bytes:
-        metadata, base = await asyncio.gather(self._metadata(CURRENT), self._base_map())
+        metadata, base = await asyncio.gather(self._metadata(CURRENT.api_name), self._base_map())
         step = metadata["timesteps"][metadata["defaultIndex"]]
         radar = await self._radar_layers(step)
         image = await asyncio.to_thread(self._compose_frame, base, radar, step["id"])
@@ -475,8 +500,8 @@ class RadarRenderer:
         return out.getvalue()
 
     async def _render_animation(self, period: RadarPeriod) -> bytes | None:
-        metadata, base = await asyncio.gather(self._metadata(period), self._base_map())
-        steps = self._animation_steps(period, metadata)
+        now = dt_util.now()
+        steps, base = await asyncio.gather(self._animation_steps(period, now), self._base_map())
         layers = await asyncio.gather(
             *(self._radar_layers(step) for step in steps), return_exceptions=True
         )
@@ -488,7 +513,12 @@ class RadarRenderer:
         if not available:
             return None
         times = [time for step_id, _ in available if (time := _step_time(step_id))]
-        timeline = Timeline.for_frames(times, dt_util.utcnow()) if times else None
+        if period.day_offset is not None:
+            timeline: Timeline | None = Timeline.for_day(
+                now.date() + timedelta(days=period.day_offset), now
+            )
+        else:
+            timeline = Timeline.for_frames(times, now) if times else None
         frames = [
             await asyncio.to_thread(self._compose_frame, base, layer, step_id, timeline)
             for step_id, layer in available
@@ -514,7 +544,7 @@ async def async_setup_entry(
             )
             for layer in (WEATHER, RAIN, CLOUDS)
         )
-        for period in (None, CURRENT, TODAY, TOMORROW)
+        for period in (None, CURRENT, TODAY, TOMORROW, IN_2_DAYS, IN_3_DAYS)
     )
 
 
@@ -543,6 +573,7 @@ class WetterOnlineRadarCamera(Camera):
             f"{period.key if period else 'current'}"
         )
         self._attr_device_info = coordinator.device_info
+        self._attr_entity_registry_enabled_default = not period or period.enabled_default
         self.content_type = "image/gif" if period else "image/png"
 
     @property

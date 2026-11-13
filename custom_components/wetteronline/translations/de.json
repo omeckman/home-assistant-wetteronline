@@ -15,14 +15,20 @@
       "weather_radar_animation": {"name": "Wetterradar-Animation"},
       "weather_radar_today": {"name": "Wetterradar heute"},
       "weather_radar_tomorrow": {"name": "Wetterradar morgen"},
+      "weather_radar_in_2_days": {"name": "Wetterradar in 2 Tagen"},
+      "weather_radar_in_3_days": {"name": "Wetterradar in 3 Tagen"},
       "rain_radar": {"name": "Regenradar"},
       "rain_radar_animation": {"name": "Regenradar-Animation"},
       "rain_radar_today": {"name": "Regenradar heute"},
       "rain_radar_tomorrow": {"name": "Regenradar morgen"},
+      "rain_radar_in_2_days": {"name": "Regenradar in 2 Tagen"},
+      "rain_radar_in_3_days": {"name": "Regenradar in 3 Tagen"},
       "cloud_radar": {"name": "Wolkenradar"},
       "cloud_radar_animation": {"name": "Wolkenradar-Animation"},
       "cloud_radar_today": {"name": "Wolkenradar heute"},
-      "cloud_radar_tomorrow": {"name": "Wolkenradar morgen"}
+      "cloud_radar_tomorrow": {"name": "Wolkenradar morgen"},
+      "cloud_radar_in_2_days": {"name": "Wolkenradar in 2 Tagen"},
+      "cloud_radar_in_3_days": {"name": "Wolkenradar in 3 Tagen"}
     },
     "sensor": {
       "condition": {"name": "Wetterzustand"}, "weather_symbol": {"name": "Wettersymbol"},

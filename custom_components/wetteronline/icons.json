@@ -6,14 +6,20 @@
       "weather_radar_animation": {"default": "mdi:radar"},
       "weather_radar_today": {"default": "mdi:radar"},
       "weather_radar_tomorrow": {"default": "mdi:radar"},
+      "weather_radar_in_2_days": {"default": "mdi:radar"},
+      "weather_radar_in_3_days": {"default": "mdi:radar"},
       "rain_radar": {"default": "mdi:weather-pouring"},
       "rain_radar_animation": {"default": "mdi:weather-pouring"},
       "rain_radar_today": {"default": "mdi:weather-pouring"},
       "rain_radar_tomorrow": {"default": "mdi:weather-pouring"},
+      "rain_radar_in_2_days": {"default": "mdi:weather-pouring"},
+      "rain_radar_in_3_days": {"default": "mdi:weather-pouring"},
       "cloud_radar": {"default": "mdi:weather-cloudy"},
       "cloud_radar_animation": {"default": "mdi:weather-cloudy"},
       "cloud_radar_today": {"default": "mdi:weather-cloudy"},
-      "cloud_radar_tomorrow": {"default": "mdi:weather-cloudy"}
+      "cloud_radar_tomorrow": {"default": "mdi:weather-cloudy"},
+      "cloud_radar_in_2_days": {"default": "mdi:weather-cloudy"},
+      "cloud_radar_in_3_days": {"default": "mdi:weather-cloudy"}
     }
   }
 }
