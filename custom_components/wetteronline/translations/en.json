@@ -17,18 +17,21 @@
       "weather_radar_tomorrow": {"name": "Weather radar tomorrow"},
       "weather_radar_in_2_days": {"name": "Weather radar in 2 days"},
       "weather_radar_in_3_days": {"name": "Weather radar in 3 days"},
+      "weather_radar_in_4_days": {"name": "Weather radar in 4 days"},
       "rain_radar": {"name": "Rain radar"},
       "rain_radar_animation": {"name": "Rain radar animation"},
       "rain_radar_today": {"name": "Rain radar today"},
       "rain_radar_tomorrow": {"name": "Rain radar tomorrow"},
       "rain_radar_in_2_days": {"name": "Rain radar in 2 days"},
       "rain_radar_in_3_days": {"name": "Rain radar in 3 days"},
+      "rain_radar_in_4_days": {"name": "Rain radar in 4 days"},
       "cloud_radar": {"name": "Cloud radar"},
       "cloud_radar_animation": {"name": "Cloud radar animation"},
       "cloud_radar_today": {"name": "Cloud radar today"},
       "cloud_radar_tomorrow": {"name": "Cloud radar tomorrow"},
       "cloud_radar_in_2_days": {"name": "Cloud radar in 2 days"},
-      "cloud_radar_in_3_days": {"name": "Cloud radar in 3 days"}
+      "cloud_radar_in_3_days": {"name": "Cloud radar in 3 days"},
+      "cloud_radar_in_4_days": {"name": "Cloud radar in 4 days"}
     },
     "sensor": {
       "condition": {"name": "Condition"}, "weather_symbol": {"name": "Weather symbol"},

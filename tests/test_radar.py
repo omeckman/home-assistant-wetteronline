@@ -17,6 +17,7 @@ from custom_components.wetteronline.camera import (
     CURRENT,
     IN_2_DAYS,
     IN_3_DAYS,
+    IN_4_DAYS,
     TODAY,
     TOMORROW,
     WEATHER,
@@ -207,7 +208,7 @@ async def test_tomorrow_animation_uses_local_calendar_day(
 ) -> None:
     await hass.config.async_set_time_zone("Europe/Berlin")
     freezer.move_to("2026-11-13T10:00:00+00:00")
-    steps = _hours(datetime(2026, 11, 13, 22, tzinfo=UTC), 74)  # 23:00 today to 00:00 + 4
+    steps = _hours(datetime(2026, 11, 13, 22, tzinfo=UTC), 98)  # 23:00 today to 00:00 + 5
     async with ClientSession() as session:
         renderer = RadarRenderer(session, 52.517, 13.4)
         renderer._metadata = AsyncMock(  # type: ignore[method-assign]
@@ -217,11 +218,13 @@ async def test_tomorrow_animation_uses_local_calendar_day(
         tomorrow = await renderer._animation_steps(TOMORROW, dt_util.now())
         in_2_days = await renderer._animation_steps(IN_2_DAYS, dt_util.now())
         in_3_days = await renderer._animation_steps(IN_3_DAYS, dt_util.now())
+        in_4_days = await renderer._animation_steps(IN_4_DAYS, dt_util.now())
         current = await renderer._animation_steps(CURRENT, dt_util.now())
 
     assert tomorrow == steps[1:25]
     assert in_2_days == steps[25:49]
     assert in_3_days == steps[49:73]
+    assert in_4_days == steps[73:97]
     assert current == steps[:7]
 
 

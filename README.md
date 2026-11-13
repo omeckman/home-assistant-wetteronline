@@ -28,7 +28,7 @@ Unofficial Home Assistant integration for the freely accessible location pages o
 - Location-centred WetterOnline weather radar (clouds and precipitation), rain radar,
   and cloud radar cameras, each as a current image, a current animation, and hourly
   animations for today (observed radar since midnight, then forecast), tomorrow, and
-  in two and three days (the last two are disabled by default)
+  in two to four days (disabled by default)
 - Diagnostics and migration from the original 1.x config-entry format
 - Updates every 15 minutes
 

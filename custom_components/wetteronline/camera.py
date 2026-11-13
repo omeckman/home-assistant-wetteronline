@@ -109,6 +109,10 @@ IN_2_DAYS = RadarPeriod(
 IN_3_DAYS = RadarPeriod(
     "in_3_days", "periodDayFour", timedelta(minutes=30), day_offset=3, enabled_default=False
 )
+# Beyond WetterOnline's own day periods; covered by periodDayFour until its forecast ends.
+IN_4_DAYS = RadarPeriod(
+    "in_4_days", "periodDayFour", timedelta(minutes=30), day_offset=4, enabled_default=False
+)
 # Observed radar periods for today's hours before now, smallest download first.
 PAST_PERIODS = ((6, "periodLast6h"), (12, "periodLast12h"), (24, "periodLast24h"))
 
@@ -544,7 +548,7 @@ async def async_setup_entry(
             )
             for layer in (WEATHER, RAIN, CLOUDS)
         )
-        for period in (None, CURRENT, TODAY, TOMORROW, IN_2_DAYS, IN_3_DAYS)
+        for period in (None, CURRENT, TODAY, TOMORROW, IN_2_DAYS, IN_3_DAYS, IN_4_DAYS)
     )
 
 

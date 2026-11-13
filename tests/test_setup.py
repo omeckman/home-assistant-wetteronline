@@ -36,7 +36,7 @@ async def test_setup_creates_weather_sensors_warning_and_radar(hass: HomeAssista
     for radar in ("weather_radar", "rain_radar", "cloud_radar"):
         for suffix in ("", "_animation", "_today", "_tomorrow"):
             assert hass.states.get(f"camera.berlin_{radar}{suffix}") is not None
-        for suffix in ("_in_2_days", "_in_3_days"):
+        for suffix in ("_in_2_days", "_in_3_days", "_in_4_days"):
             entry_id = f"camera.berlin_{radar}{suffix}"
             assert (
                 entity_registry.async_get(entry_id).disabled_by
