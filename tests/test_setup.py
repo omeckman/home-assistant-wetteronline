@@ -53,6 +53,35 @@ async def test_setup_creates_weather_sensors_warning_and_radar(hass: HomeAssista
     assert hass.states.get("sensor.berlin_temperature").state == "20.0"
 
 
+async def test_pollen_sensors_are_named_without_translation(hass: HomeAssistant) -> None:
+    """Pollen types without a translation keep their name instead of the device name."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Berlin",
+        unique_id="10382",
+        version=2,
+        data={CONF_LOCATION: "/wetter/berlin", CONF_LOCATION_ID: "10382"},
+    )
+    entry.add_to_hass(hass)
+    data = sample_data()
+    data.pollen = [
+        {
+            "date": "2026-07-12T00:00:00+02:00",
+            "pollen": [{"name": "Hasel", "value": 0}, {"name": "Zeder", "value": 1}],
+        }
+    ]
+    with patch(
+        "custom_components.wetteronline.wetteronline_api.WetterOnline.async_get_weather",
+        new=AsyncMock(return_value=data),
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    assert hass.states.get("sensor.berlin_pollen_hazel") is not None
+    assert hass.states.get("sensor.berlin_pollen_zeder") is not None
+    assert hass.states.get("sensor.berlin") is None
+
+
 async def test_migration_preserves_weather_entity_and_device(hass: HomeAssistant) -> None:
     """Version-one registry entries are moved to stable geo ids."""
     entry = MockConfigEntry(
