@@ -9,6 +9,9 @@ MANUFACTURER: Final = "WetterOnline"
 CONF_LOCATION: Final = "location"
 CONF_LOCATION_ID: Final = "location_id"
 CONF_URL_WETTERONLINE: Final = "url_wetteronline"  # v1 migration
+CONF_TIMELINE_POSITION: Final = "timeline_position"
+TIMELINE_BOTTOM: Final = "bottom"
+TIMELINE_TOP: Final = "top"
 UPDATE_INTERVAL: Final = timedelta(minutes=15)
 RADAR_INTERVAL: Final = timedelta(minutes=5)
 

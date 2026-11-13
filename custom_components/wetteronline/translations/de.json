@@ -8,11 +8,42 @@
     "error": {"cannot_connect": "Verbindung zu WetterOnline fehlgeschlagen.", "invalid_location": "Für diesen Ort wurden keine gültigen WetterOnline-Daten gefunden."},
     "abort": {"already_configured": "Dieser WetterOnline-Ort ist bereits eingerichtet.", "unique_id_mismatch": "Der gewählte Ort stimmt nicht mit dem eingerichteten Ort überein.", "reconfigure_successful": "Der WetterOnline-Ort wurde aktualisiert."}
   },
+  "options": {
+    "step": {
+      "init": {
+        "title": "WetterOnline-Optionen",
+        "data": {"timeline_position": "Position von Uhrzeit und Zeitleiste"},
+        "data_description": {"timeline_position": "Wo Radarbilder die Uhrzeit und die Zeitleiste anzeigen."}
+      }
+    }
+  },
+  "selector": {
+    "timeline_position": {"options": {"bottom": "Unten", "top": "Oben"}}
+  },
   "entity": {
     "binary_sensor": {"weather_warning": {"name": "Wetterwarnung"}},
     "camera": {
       "weather_radar": {"name": "Wetterradar"},
-      "weather_radar_animation": {"name": "Wetterradar-Animation"}
+      "weather_radar_animation": {"name": "Wetterradar-Animation"},
+      "weather_radar_today": {"name": "Wetterradar heute"},
+      "weather_radar_tomorrow": {"name": "Wetterradar morgen"},
+      "weather_radar_in_2_days": {"name": "Wetterradar in 2 Tagen"},
+      "weather_radar_in_3_days": {"name": "Wetterradar in 3 Tagen"},
+      "weather_radar_in_4_days": {"name": "Wetterradar in 4 Tagen"},
+      "rain_radar": {"name": "Regenradar"},
+      "rain_radar_animation": {"name": "Regenradar-Animation"},
+      "rain_radar_today": {"name": "Regenradar heute"},
+      "rain_radar_tomorrow": {"name": "Regenradar morgen"},
+      "rain_radar_in_2_days": {"name": "Regenradar in 2 Tagen"},
+      "rain_radar_in_3_days": {"name": "Regenradar in 3 Tagen"},
+      "rain_radar_in_4_days": {"name": "Regenradar in 4 Tagen"},
+      "cloud_radar": {"name": "Wolkenradar"},
+      "cloud_radar_animation": {"name": "Wolkenradar-Animation"},
+      "cloud_radar_today": {"name": "Wolkenradar heute"},
+      "cloud_radar_tomorrow": {"name": "Wolkenradar morgen"},
+      "cloud_radar_in_2_days": {"name": "Wolkenradar in 2 Tagen"},
+      "cloud_radar_in_3_days": {"name": "Wolkenradar in 3 Tagen"},
+      "cloud_radar_in_4_days": {"name": "Wolkenradar in 4 Tagen"}
     },
     "sensor": {
       "condition": {"name": "Wetterzustand"}, "weather_symbol": {"name": "Wettersymbol"},
