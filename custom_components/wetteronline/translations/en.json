@@ -12,7 +12,13 @@
     "binary_sensor": {"weather_warning": {"name": "Weather warning"}},
     "camera": {
       "weather_radar": {"name": "Weather radar"},
-      "weather_radar_animation": {"name": "Weather radar animation"}
+      "weather_radar_animation": {"name": "Weather radar animation"},
+      "weather_radar_today": {"name": "Weather radar today"},
+      "weather_radar_tomorrow": {"name": "Weather radar tomorrow"},
+      "cloud_radar": {"name": "Cloud radar"},
+      "cloud_radar_animation": {"name": "Cloud radar animation"},
+      "cloud_radar_today": {"name": "Cloud radar today"},
+      "cloud_radar_tomorrow": {"name": "Cloud radar tomorrow"}
     },
     "sensor": {
       "condition": {"name": "Condition"}, "weather_symbol": {"name": "Weather symbol"},

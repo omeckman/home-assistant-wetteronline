@@ -32,8 +32,9 @@ async def test_setup_creates_weather_sensors_warning_and_radar(hass: HomeAssista
 
     assert hass.states.get("weather.berlin") is not None
     assert hass.states.get("binary_sensor.berlin_weather_warning") is not None
-    assert hass.states.get("camera.berlin_weather_radar") is not None
-    assert hass.states.get("camera.berlin_weather_radar_animation") is not None
+    for radar in ("weather_radar", "cloud_radar"):
+        for suffix in ("", "_animation", "_today", "_tomorrow"):
+            assert hass.states.get(f"camera.berlin_{radar}{suffix}") is not None
     assert hass.states.get("sensor.berlin_temperature").state == "20.0"
 
 

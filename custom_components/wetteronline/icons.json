@@ -3,7 +3,13 @@
   "entity": {
     "camera": {
       "weather_radar": {"default": "mdi:radar"},
-      "weather_radar_animation": {"default": "mdi:radar"}
+      "weather_radar_animation": {"default": "mdi:radar"},
+      "weather_radar_today": {"default": "mdi:radar"},
+      "weather_radar_tomorrow": {"default": "mdi:radar"},
+      "cloud_radar": {"default": "mdi:weather-cloudy"},
+      "cloud_radar_animation": {"default": "mdi:weather-cloudy"},
+      "cloud_radar_today": {"default": "mdi:weather-cloudy"},
+      "cloud_radar_tomorrow": {"default": "mdi:weather-cloudy"}
     }
   }
 }
