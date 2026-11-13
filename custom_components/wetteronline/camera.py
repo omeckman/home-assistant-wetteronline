@@ -390,7 +390,7 @@ class RadarRenderer:
         footer_height = 120 if timeline and time else 68
         top = 0 if self.footer_at_top else height - footer_height
         band = Image.new("RGBA", image.size)
-        ImageDraw.Draw(band).rectangle((0, top, width, top + footer_height), fill=(0, 0, 0, 170))
+        ImageDraw.Draw(band).rectangle((0, top, width, top + footer_height), fill=(0, 0, 0, 110))
         image.alpha_composite(band)
         draw = ImageDraw.Draw(image)
         draw.text(
@@ -398,12 +398,19 @@ class RadarRenderer:
             _label(time, self.language) if time else step_id,
             fill="white",
             font=_font(50),
-            stroke_width=1,
-            stroke_fill="white",
+            stroke_width=2,
+            stroke_fill="black",
         )
         credits_font = _font(17)
         credits_x = width - 18 - draw.textlength(self.layer.credits, font=credits_font)
-        draw.text((credits_x, top + 26), self.layer.credits, fill="#d0d0d0", font=credits_font)
+        draw.text(
+            (credits_x, top + 26),
+            self.layer.credits,
+            fill="white",
+            font=credits_font,
+            stroke_width=1,
+            stroke_fill="black",
+        )
         if timeline and time:
             self._draw_timeline(draw, timeline, time, top + 70, width)
 
@@ -426,13 +433,20 @@ class RadarRenderer:
         now_right = (now_left or 0) + draw.textlength(now_text, font=font)
         for tick in timeline.ticks():
             x = x_at(tick)
-            draw.line((x, y - 4, x, y + 18), fill="#a0a0a0", width=2)
+            draw.line((x, y - 4, x, y + 18), fill="#404040", width=2)
             text = f"{dt_util.as_local(tick):%H:%M}"
             tick_left = text_left(x, text)
             tick_right = tick_left + draw.textlength(text, font=font)
             if now_left is not None and tick_left < now_right + 10 and tick_right > now_left - 10:
                 continue
-            draw.text((tick_left, y + 22), text, fill="#d0d0d0", font=font)
+            draw.text(
+                (tick_left, y + 22),
+                text,
+                fill="white",
+                font=font,
+                stroke_width=1,
+                stroke_fill="black",
+            )
         draw.rounded_rectangle((left, y, right, y + 14), radius=7, fill="#5a5a5a")
         frame_x = x_at(time)
         draw.rounded_rectangle((left, y, max(frame_x, left + 14), y + 14), radius=7, fill=ACCENT)
@@ -443,8 +457,8 @@ class RadarRenderer:
                 now_text,
                 fill="white",
                 font=font,
-                stroke_width=1,
-                stroke_fill="white",
+                stroke_width=2,
+                stroke_fill="black",
             )
         draw.ellipse(
             (frame_x - 12, y - 5, frame_x + 12, y + 19), fill=ACCENT, outline="white", width=3
