@@ -6,6 +6,7 @@ from io import BytesIO
 from unittest.mock import AsyncMock
 from urllib.parse import parse_qs, urlparse
 
+import pytest
 from aiohttp import ClientSession
 from freezegun.api import FrozenDateTimeFactory
 from homeassistant.core import HomeAssistant
@@ -21,6 +22,7 @@ from custom_components.wetteronline.camera import (
     TODAY,
     TOMORROW,
     WEATHER,
+    ZOOM_LEVELS,
     RadarRenderer,
     Timeline,
     _label,
@@ -35,14 +37,18 @@ def test_web_mercator_tile() -> None:
 
 
 def test_view_stays_inside_fetched_blocks() -> None:
-    """Locations anywhere inside a tile get a fully covered 768 px view."""
+    """Locations anywhere inside a tile get a fully covered 768 px view at every zoom."""
     for latitude, longitude in ((52.517, 13.4), (48.14, 11.58), (50.94, 6.96), (53.55, 10.0)):
         renderer = RadarRenderer(None, latitude, longitude)  # type: ignore[arg-type]
-        left, top, right, bottom = renderer._crop
-        assert left >= 0 and top >= 0
-        assert right <= renderer._columns * 512 and bottom <= renderer._rows * 512
-        assert renderer._origins[0] == (renderer._left, renderer._top)
-        assert all(x % 2 == 0 and y % 2 == 0 for x, y in renderer._origins)
+        for zoom in ZOOM_LEVELS:
+            view = renderer.view(zoom)
+            left, top, right, bottom = view.crop
+            assert left >= 0 and top >= 0
+            assert right <= view.columns * 512 and bottom <= view.rows * 512
+            assert view.origins[0] == (view.left, view.top)
+            assert all(x % 2 == 0 and y % 2 == 0 for x, y in view.origins)
+    with pytest.raises(ValueError):
+        renderer.view(6)
 
 
 def _base_map() -> tuple[bytes, None]:
@@ -119,14 +125,60 @@ async def test_radar_tiles_select_matching_quadrant() -> None:
         renderer = RadarRenderer(session, 52.517, 13.4)
         renderer._fetch = AsyncMock(return_value=b"tile")  # type: ignore[method-assign]
 
-        await renderer._radar_layers(_timestep("20261113-0530-1"))
+        await renderer._radar_layers(_timestep("20261113-0530-1"), renderer.view())
 
     descriptors = sorted(_descriptor(call.args[0]) for call in renderer._fetch.await_args_list)
-    assert renderer._origins == [(136, 82), (138, 82), (136, 84), (138, 84)]
+    assert renderer.view().origins == [(136, 82), (138, 82), (136, 84), (138, 84)]
     assert descriptors == sorted(
         f"r|2;;{qx};{qy};false|area/eu/2026/11/13/05/30/v1/ZL7/522/sprite/{tile}.png;"
         f"area/gl/2026/11/13/05/30/v2/ZL7/522/border/{tile}.png"
         for tile, qx, qy in (("68_40", 0, 1), ("68_40", 1, 1), ("68_42", 0, 0), ("68_42", 1, 0))
+    )
+
+
+async def test_radar_tiles_scale_with_zoom() -> None:
+    """Higher zoom levels request smaller parts of the zoom-7 radar tile."""
+    async with ClientSession() as session:
+        renderer = RadarRenderer(session, 52.517, 13.4)
+        renderer._fetch = AsyncMock(return_value=b"tile")  # type: ignore[method-assign]
+        step = _timestep("20261113-0530-1")
+        await renderer._radar_layer(step, 68, 40, zoom=7)
+        zoom_7 = _descriptor(renderer._fetch.await_args.args[0])
+        # Zoom-9 tile 278 is in zoom-7 tile 69, the third quarter of the even pair 68.
+        await renderer._radar_layer(step, 278, 166, zoom=9)
+        zoom_9 = _descriptor(renderer._fetch.await_args.args[0])
+
+    assert zoom_7.startswith("r|1;;0;0;false|area/eu/2026/11/13/05/30/v1/ZL7/522/sprite/68_40.png;")
+    assert zoom_9.startswith("r|4;;3;3;false|area/eu/2026/11/13/05/30/v1/ZL7/522/sprite/68_40.png;")
+
+
+async def test_card_frames_have_no_footer_and_are_cached() -> None:
+    async with ClientSession() as session:
+        renderer = RadarRenderer(session, 52.517, 13.4)
+        renderer._metadata = AsyncMock(  # type: ignore[method-assign]
+            return_value={
+                "defaultIndex": 1,
+                "timesteps": _hours(datetime(2026, 11, 13, tzinfo=UTC), 3),
+            }
+        )
+        renderer._base_map = AsyncMock(return_value=_base_map())  # type: ignore[method-assign]
+        renderer._radar_layers = AsyncMock(  # type: ignore[method-assign]
+            return_value=[b"", b"", b"", b""]
+        )
+
+        frames = await renderer.frames(CURRENT, 8)
+        again = await renderer.frames(CURRENT, 8)
+
+    assert frames is again
+    assert renderer._metadata.await_count == 1
+    assert frames.step_ids == ("20261113-0000-1", "20261113-0100-1", "20261113-0200-1")
+    image = Image.open(BytesIO(frames.images[0]))
+    assert image.format == "WEBP"
+    assert image.size == (768, 768)
+    # No footer band darkens the bottom of the map.
+    assert (
+        sum(abs(a - b) for a, b in zip(image.getpixel((700, 760)), (220, 231, 237), strict=True))
+        < 12
     )
 
 
@@ -164,7 +216,7 @@ async def test_cloud_radar_uses_cloud_tiles_and_wetteronline_map() -> None:
         renderer._composite = AsyncMock(  # type: ignore[method-assign]
             return_value=_base_map()[0]
         )
-        background, overlay = await renderer._base_map()
+        background, overlay = await renderer._base_map(renderer.view())
 
     assert cloud_descriptor.startswith("c|2;;0;1;false|area/eu/2026/11/13/05/30/v1/ZL7/522/68_40")
     assert background and overlay

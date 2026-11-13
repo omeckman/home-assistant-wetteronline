@@ -5,17 +5,27 @@ from __future__ import annotations
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_NAME, Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.typing import ConfigType
 
 from .const import CONF_LOCATION, CONF_LOCATION_ID, CONF_URL_WETTERONLINE, DOMAIN
 from .coordinator import WeatherOnlineDataUpdateCoordinator
+from .radar_card import async_setup_radar_card
 from .wetteronline_api import WetterOnline
 
 PLATFORMS = [Platform.WEATHER, Platform.SENSOR, Platform.BINARY_SENSOR, Platform.CAMERA]
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 type WetterOnlineConfigEntry = ConfigEntry[WeatherOnlineDataUpdateCoordinator]
+
+
+async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
+    """Set up the radar card shared by all locations."""
+    await async_setup_radar_card(hass)
+    return True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: WetterOnlineConfigEntry) -> bool:
