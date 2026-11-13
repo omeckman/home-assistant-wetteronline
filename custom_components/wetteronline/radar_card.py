@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -25,6 +26,7 @@ from .camera import (
     RadarPeriod,
     RadarRenderer,
     _step_time,
+    max_pan,
 )
 from .const import DOMAIN
 
@@ -51,14 +53,58 @@ def _file_hash(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()[:12]
 
 
-def _selection(request: web.Request, entity_id: str) -> tuple[RadarRenderer, RadarPeriod, int]:
-    """Return the renderer, period, and zoom requested for a WetterOnline entity."""
+@dataclass(frozen=True, slots=True)
+class Selection:
+    """The radar frames requested for a WetterOnline location."""
+
+    renderer: RadarRenderer
+    period: RadarPeriod
+    zoom: int
+    pan_x: int
+    pan_y: int
+    center: tuple[float, float] | None
+    location_name: str
+
+    @property
+    def query(self) -> str:
+        """Return the query string that selects these frames again."""
+        query = (
+            f"layer={self.renderer.layer.key}&period={self.period.key}&zoom={self.zoom}"
+            f"&pan_x={self.pan_x}&pan_y={self.pan_y}"
+        )
+        if self.center:
+            query += f"&lat={self.center[0]:.5f}&lon={self.center[1]:.5f}"
+        return query
+
+    async def frames(self) -> RadarFrames:
+        """Return the rendered frames."""
+        try:
+            frames = await self.renderer.frames(
+                self.period, self.zoom, self.pan_x, self.pan_y, self.center
+            )
+        except ValueError as err:
+            raise web.HTTPBadRequest(text=str(err)) from err
+        if frames is None:
+            raise web.HTTPServiceUnavailable(text="WetterOnline radar is not available")
+        return frames
+
+
+def _number[T: (int, float)](request: web.Request, name: str, kind: type[T], default: T) -> T:
+    try:
+        return kind(request.query.get(name, default))
+    except ValueError as err:
+        raise web.HTTPBadRequest(text=f"Invalid {name}") from err
+
+
+def _selection(request: web.Request, entity_id: str) -> Selection:
+    """Return the frames requested for the location of a WetterOnline entity."""
     hass = request.app[KEY_HASS]
     entry = er.async_get(hass).async_get(entity_id)
     if entry is None or entry.platform != DOMAIN or entry.config_entry_id is None:
         raise web.HTTPNotFound
     renderers = hass.data.get(RADAR_RENDERERS, {}).get(entry.config_entry_id)
-    if not renderers:
+    config_entry = hass.config_entries.async_get_entry(entry.config_entry_id)
+    if not renderers or config_entry is None:
         raise web.HTTPNotFound
     # Without parameters, a radar camera opens its own layer and period.
     unique_id = entry.unique_id
@@ -70,20 +116,25 @@ def _selection(request: web.Request, entity_id: str) -> tuple[RadarRenderer, Rad
         CURRENT.key,
     )
     periods = {period.key: period for period in ANIMATION_PERIODS}
-    try:
-        zoom = int(request.query.get("zoom", DEFAULT_ZOOM))
-    except ValueError as err:
-        raise web.HTTPBadRequest(text="Invalid zoom") from err
+    zoom = _number(request, "zoom", int, DEFAULT_ZOOM)
     if layer_key not in renderers or period_key not in periods or zoom not in ZOOM_LEVELS:
         raise web.HTTPBadRequest(text="Unsupported layer, period, or zoom")
-    return renderers[layer_key], periods[period_key], zoom
-
-
-async def _frames(renderer: RadarRenderer, period: RadarPeriod, zoom: int) -> RadarFrames:
-    frames = await renderer.frames(period, zoom)
-    if frames is None:
-        raise web.HTTPServiceUnavailable(text="WetterOnline radar is not available")
-    return frames
+    center = None
+    if "lat" in request.query or "lon" in request.query:
+        latitude = _number(request, "lat", float, 0.0)
+        longitude = _number(request, "lon", float, 0.0)
+        if not (-85 <= latitude <= 85 and -180 <= longitude <= 180):
+            raise web.HTTPBadRequest(text="Invalid lat or lon")
+        center = (latitude, longitude)
+    return Selection(
+        renderer=renderers[layer_key],
+        period=periods[period_key],
+        zoom=zoom,
+        pan_x=_number(request, "pan_x", int, 0),
+        pan_y=_number(request, "pan_y", int, 0),
+        center=center,
+        location_name=config_entry.title,
+    )
 
 
 class RadarFramesView(HomeAssistantView):
@@ -93,11 +144,10 @@ class RadarFramesView(HomeAssistantView):
     name = "api:wetteronline:radar"
 
     async def get(self, request: web.Request, entity_id: str) -> web.Response:
-        """Render the frames if needed and return their times and URLs."""
-        renderer, period, zoom = _selection(request, entity_id)
-        frames = await _frames(renderer, period, zoom)
-        timeline = frames.timeline
-        query = f"layer={renderer.layer.key}&period={period.key}&zoom={zoom}"
+        """Render the frames if needed and return their times, URLs, and map section."""
+        selection = _selection(request, entity_id)
+        frames = await selection.frames()
+        renderer, timeline, view = selection.renderer, frames.timeline, frames.view
 
         def iso(time: datetime | None) -> str | None:
             return time.isoformat() if time else None
@@ -106,10 +156,20 @@ class RadarFramesView(HomeAssistantView):
             {
                 "layer": renderer.layer.key,
                 "layers": [layer.key for layer in LAYERS],
-                "period": period.key,
+                "period": selection.period.key,
                 "periods": [period.key for period in ANIMATION_PERIODS],
-                "zoom": zoom,
+                "zoom": selection.zoom,
                 "zoom_levels": list(ZOOM_LEVELS),
+                "pan_x": selection.pan_x,
+                "pan_y": selection.pan_y,
+                "max_pan": max_pan(selection.zoom),
+                "location": {
+                    "name": selection.location_name,
+                    "latitude": renderer.latitude,
+                    "longitude": renderer.longitude,
+                },
+                # World pixels of the frames' top-left corner, to place markers on them.
+                "view": {"zoom": view.zoom, "x": view.origin[0], "y": view.origin[1], "size": 768},
                 "now": dt_util.utcnow().isoformat(),
                 "start": iso(timeline.start if timeline else None),
                 "end": iso(timeline.end if timeline else None),
@@ -118,7 +178,7 @@ class RadarFramesView(HomeAssistantView):
                     {
                         "id": step_id,
                         "time": iso(_step_time(step_id)),
-                        "url": f"{API_URL}/{entity_id}/{step_id}?{query}",
+                        "url": f"{API_URL}/{entity_id}/{step_id}?{selection.query}",
                     }
                     for step_id in frames.step_ids
                 ],
@@ -134,8 +194,7 @@ class RadarFrameView(HomeAssistantView):
 
     async def get(self, request: web.Request, entity_id: str, step_id: str) -> web.Response:
         """Return the cached frame image."""
-        renderer, period, zoom = _selection(request, entity_id)
-        frames = await _frames(renderer, period, zoom)
+        frames = await _selection(request, entity_id).frames()
         if step_id not in frames.step_ids:
             raise web.HTTPNotFound
         return web.Response(

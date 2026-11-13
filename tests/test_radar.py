@@ -28,6 +28,7 @@ from custom_components.wetteronline.camera import (
     _label,
     _step_time,
     _world,
+    max_pan,
 )
 
 
@@ -49,6 +50,47 @@ def test_view_stays_inside_fetched_blocks() -> None:
             assert all(x % 2 == 0 and y % 2 == 0 for x, y in view.origins)
     with pytest.raises(ValueError):
         renderer.view(6)
+
+
+def test_moved_views_cover_exactly_the_overview() -> None:
+    """Half-view steps reach the edges of the zoom-7 overview but not beyond."""
+    renderer = RadarRenderer(None, 48.14, 11.58)  # type: ignore[arg-type]
+    overview = renderer.view(7)
+    overview_left = overview.origin[0] / 2**7
+    overview_right = (overview.origin[0] + 768) / 2**7
+    for zoom in ZOOM_LEVELS:
+        limit = max_pan(zoom)
+        for pan_x in range(-limit, limit + 1):
+            for pan_y in range(-limit, limit + 1):
+                view = renderer.view(zoom, pan_x, pan_y)
+                left, top, right, bottom = view.crop
+                assert left >= 0 and top >= 0
+                assert right <= view.columns * 512 and bottom <= view.rows * 512
+                # The location marker moves by half a view per step.
+                assert abs(view.marker[0] - view.center[0] + pan_x * 384) <= 1
+        # In world units of zoom 0, the outermost views end at the overview's edges.
+        scale = 2**zoom
+        assert renderer.view(zoom, -limit, 0).origin[0] / scale == pytest.approx(
+            overview_left, abs=2 / scale
+        )
+        assert (renderer.view(zoom, limit, 0).origin[0] + 768) / scale == pytest.approx(
+            overview_right, abs=2 / scale
+        )
+    assert (max_pan(7), max_pan(8), max_pan(9)) == (0, 1, 3)
+    with pytest.raises(ValueError):
+        renderer.view(8, 2, 0)
+
+
+def test_card_views_snap_to_half_tiles() -> None:
+    """Nearby centers, e.g. a moving phone, share the same frames."""
+    renderer = RadarRenderer(None, 52.517, 13.4)  # type: ignore[arg-type]
+    first = renderer.view(8, center=(48.1400, 11.5800), snap=True)
+    nearby = renderer.view(8, center=(48.1405, 11.5806), snap=True)
+    exact = renderer.view(8, center=(48.1400, 11.5800))
+
+    assert first.origin == nearby.origin
+    assert first.marker != nearby.marker
+    assert exact.center == exact.marker
 
 
 def _base_map() -> tuple[bytes, None]:

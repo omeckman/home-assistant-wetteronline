@@ -29,7 +29,8 @@ Unofficial Home Assistant integration for the freely accessible location pages o
   and cloud radar cameras, each as a current image, a current animation, and hourly
   animations for today (observed radar since midnight, then forecast), tomorrow, and
   in two to four days (disabled by default)
-- A radar dashboard card to switch map and day, pause, step through the hours, and zoom
+- A radar dashboard card to switch map and day, pause, step through the hours, zoom,
+  move the map, and center it on your phone or your own places
 - Diagnostics and migration from the original 1.x config-entry format
 - Updates every 15 minutes
 
@@ -100,7 +101,10 @@ or HACS frontend repository is needed.
 - Switch between now, today, tomorrow, and the next three days
 - Switch between weather radar (clouds and precipitation), rain radar, and cloud radar
 - Play, pause, step frame by frame, drag the slider, or swipe over the map
-- Zoom in and out in four steps
+- Zoom in three steps (overview, ×2, ×4) and move the zoomed map with the arrows at its
+  edges, within the area of the overview
+- Center the map on the WetterOnline location, on your phone's position, or on your own
+  places
 
 Add it with **Add card → WetterOnline Radar**, or in YAML:
 
@@ -110,18 +114,33 @@ entity: camera.berlin_weather_radar
 ```
 
 `entity` can be any WetterOnline entity of the location; a radar camera also selects
-its map and period when the card opens. Optional settings:
+its map and period when the card opens. With "My location", the map follows the phone
+once it moved an eighth of the map away. Optional settings:
 
 | Option | Default | Description |
 | --- | --- | --- |
 | `title` | none | Card title |
 | `layer` | from the entity | Map when opened: `weather`, `rain`, or `clouds` |
 | `period` | from the entity | `animation` (now), `today`, `tomorrow`, `in_2_days`, `in_3_days`, or `in_4_days` |
-| `zoom` | `8` | Zoom level when opened, `7` to `10` |
+| `zoom` | `8` | Zoom level when opened: `7` (overview), `8`, or `9` |
+| `center` | `location` | Center when opened: `location`, `tracker`, or the name of a place |
+| `tracker` | own person | Person or device tracker for "My location"; by default the person of the user looking at the card |
+| `places` | none | Own centers, each with `name`, `latitude`, and `longitude` |
 | `frame_duration` | `1000` | Milliseconds per frame while playing |
 | `autoplay` | `true` | Start playing when opened |
 | `periods` | all | Periods offered as buttons, for example `[animation, today, tomorrow]` |
 | `layers` | all | Maps offered as buttons, for example `[weather, rain]` |
+
+For example, with an own place to check the weather at a holiday home:
+
+```yaml
+type: custom:wetteronline-radar-card
+entity: camera.berlin_weather_radar
+places:
+  - name: Holiday home
+    latitude: 54.18
+    longitude: 7.89
+```
 
 ## Troubleshooting
 

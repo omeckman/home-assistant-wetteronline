@@ -1,9 +1,10 @@
-// WetterOnline radar card: step through, pause, and zoom the radar frames of the
+// WetterOnline radar card: step through, pause, zoom, and move the radar frames of the
 // WetterOnline integration. Served and loaded by the integration itself.
 
 const API_URL = "/api/wetteronline/radar";
 const REFRESH_MS = 10 * 60 * 1000;
 const SWIPE_STEP_PX = 24;
+const TRACKER_RELOAD_MS = 3000;
 
 const TEXT = {
   de: {
@@ -19,6 +20,9 @@ const TEXT = {
     next: "Weiter",
     zoomIn: "Näher",
     zoomOut: "Weiter weg",
+    myLocation: "Mein Standort",
+    recenter: "Zur Mitte",
+    move: { left: "Nach links", right: "Nach rechts", up: "Nach oben", down: "Nach unten" },
     editor: {
       entity: "WetterOnline-Entität des Orts",
       layer: "Karte beim Öffnen",
@@ -27,6 +31,8 @@ const TEXT = {
       frame_duration: "Dauer pro Bild",
       autoplay: "Automatisch abspielen",
       title: "Titel",
+      tracker: "Mein Standort aus (Standard: eigene Person)",
+      center: "Mitte beim Öffnen",
     },
   },
   en: {
@@ -42,6 +48,9 @@ const TEXT = {
     next: "Next",
     zoomIn: "Zoom in",
     zoomOut: "Zoom out",
+    myLocation: "My location",
+    recenter: "Back to center",
+    move: { left: "Move left", right: "Move right", up: "Move up", down: "Move down" },
     editor: {
       entity: "WetterOnline entity of the location",
       layer: "Map when opened",
@@ -50,10 +59,21 @@ const TEXT = {
       frame_duration: "Duration per frame",
       autoplay: "Play automatically",
       title: "Title",
+      tracker: "My location from (default: own person)",
+      center: "Center when opened",
     },
   },
 };
 const DAY_OFFSETS = { animation: 0, today: 0, tomorrow: 1, in_2_days: 2, in_3_days: 3, in_4_days: 4 };
+
+const MARKER_COLORS = { location: "#00a7d1", tracker: "#ff9800", place: "#9c27b0" };
+
+// Web Mercator world pixel of a coordinate at a zoom level, as used by the frames.
+const worldPixel = (latitude, longitude, zoom) => {
+  const size = 256 * 2 ** zoom;
+  const lat = (Math.max(Math.min(latitude, 85.0511), -85.0511) * Math.PI) / 180;
+  return [((longitude + 180) / 360) * size, ((1 - Math.asinh(Math.tan(lat)) / Math.PI) / 2) * size];
+};
 
 const languageOf = (hass) =>
   ((hass && (hass.locale?.language || hass.language)) || navigator.language || "en").split("-")[0];
@@ -67,7 +87,7 @@ const STYLE = `
   .chips { display: flex; gap: 6px; padding: 8px 12px 0; overflow-x: auto; scrollbar-width: none; }
   .chips::-webkit-scrollbar { display: none; }
   .chip {
-    flex: none; border: 1px solid var(--divider-color); border-radius: 16px;
+    flex: none; border: 1px solid var(--divider-color); border-radius: 6px;
     background: none; color: var(--primary-text-color); padding: 4px 12px;
     font: inherit; font-size: 0.9em; cursor: pointer;
   }
@@ -82,6 +102,21 @@ const STYLE = `
   }
   .badge { font-size: 0.55em; font-weight: 600; background: #fff; color: #000; border-radius: 6px; padding: 1px 6px; text-shadow: none; }
   .credits { position: absolute; right: 6px; bottom: 4px; color: #fff; font-size: 0.7em; text-shadow: 0 0 2px #000, 0 0 2px #000; }
+  .marker {
+    position: absolute; width: 14px; height: 14px; margin: -10px 0 0 -10px; border-radius: 50%;
+    border: 3px solid #fff; box-shadow: 0 0 3px rgba(0, 0, 0, 0.6); pointer-events: none;
+  }
+  .map-button {
+    position: absolute; width: 36px; height: 36px; border: none; border-radius: 6px; padding: 0;
+    background: rgba(0, 0, 0, 0.45); color: #fff; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .map-button:hover { background: rgba(0, 0, 0, 0.65); }
+  .move-left { left: 6px; top: 50%; transform: translateY(-50%); }
+  .move-right { right: 6px; top: 50%; transform: translateY(-50%); }
+  .move-up { top: 6px; left: 50%; transform: translateX(-50%); }
+  .move-down { bottom: 6px; left: 50%; transform: translateX(-50%); }
+  .recenter { left: 6px; bottom: 6px; }
   .status {
     position: absolute; inset: 0; display: flex; flex-direction: column; gap: 8px;
     align-items: center; justify-content: center; color: var(--primary-text-color); text-align: center;
@@ -89,7 +124,7 @@ const STYLE = `
   .status span { background: var(--card-background-color); padding: 6px 12px; border-radius: 8px; }
   .controls { display: flex; align-items: center; gap: 2px; padding: 4px 6px 0; }
   .icon-button {
-    flex: none; width: 40px; height: 40px; border: none; border-radius: 50%; background: none;
+    flex: none; width: 40px; height: 40px; border: none; border-radius: 6px; background: none;
     color: var(--primary-text-color); cursor: pointer; display: flex; align-items: center; justify-content: center;
   }
   .icon-button:disabled { color: var(--disabled-text-color); cursor: default; }
@@ -122,7 +157,12 @@ class WetterOnlineRadarCard extends HTMLElement {
           name: "period",
           selector: { select: { mode: "dropdown", options: options(Object.keys(DAY_OFFSETS), { ...text.periods, in_2_days: "+2", in_3_days: "+3", in_4_days: "+4" }) } },
         },
-        { name: "zoom", selector: { number: { min: 7, max: 10, mode: "slider" } } },
+        { name: "zoom", selector: { number: { min: 7, max: 9, mode: "slider" } } },
+        { name: "tracker", selector: { entity: { filter: [{ domain: "person" }, { domain: "device_tracker" }] } } },
+        {
+          name: "center",
+          selector: { select: { mode: "dropdown", options: [{ value: "location", label: "WetterOnline" }, { value: "tracker", label: text.myLocation }] } },
+        },
         { name: "frame_duration", selector: { number: { min: 200, max: 5000, step: 100, unit_of_measurement: "ms" } } },
         { name: "autoplay", selector: { boolean: {} } },
       ],
@@ -135,7 +175,12 @@ class WetterOnlineRadarCard extends HTMLElement {
       throw new Error("Please choose a WetterOnline entity");
     }
     this._config = { frame_duration: 1000, autoplay: true, ...config };
-    this._selection = { layer: config.layer, period: config.period, zoom: config.zoom };
+    this._config.places = (Array.isArray(config.places) ? config.places : [])
+      .map((place) => ({ ...place, latitude: Number(place.latitude), longitude: Number(place.longitude) }))
+      .filter((place) => Number.isFinite(place.latitude) && Number.isFinite(place.longitude));
+    this._selection = { layer: config.layer, period: config.period, zoom: config.zoom, pan_x: 0, pan_y: 0 };
+    const placeIndex = this._config.places.findIndex((place) => place.name === config.center);
+    this._center = placeIndex >= 0 ? `place:${placeIndex}` : config.center === "tracker" ? "tracker" : "location";
     this._playing = this._config.autoplay;
     (this._frames || []).forEach((frame) => URL.revokeObjectURL(frame.url));
     this._frames = [];
@@ -153,6 +198,19 @@ class WetterOnlineRadarCard extends HTMLElement {
     if (first && this._config) {
       this._render();
       this._load();
+      return;
+    }
+    if (!this._data) return;
+    // Follow the phone: markers move at once, the map once it left the loaded section.
+    const trackerKey = JSON.stringify(this._trackerPoint());
+    if (trackerKey !== this._trackerKey) {
+      this._trackerKey = trackerKey;
+      this._renderCenters();
+      this._renderMarkers();
+      if (this._center === "tracker" && this._trackerLeftCenter()) {
+        clearTimeout(this._trackerTimer);
+        this._trackerTimer = setTimeout(() => this._load(), TRACKER_RELOAD_MS);
+      }
     }
   }
 
@@ -163,6 +221,7 @@ class WetterOnlineRadarCard extends HTMLElement {
 
   disconnectedCallback() {
     clearInterval(this._refreshTimer);
+    clearTimeout(this._trackerTimer);
     clearInterval(this._playTimer);
     this._playTimer = undefined;
   }
@@ -186,10 +245,17 @@ class WetterOnlineRadarCard extends HTMLElement {
         ${this._config.title ? `<div class="title"></div>` : ""}
         <div class="chips periods"></div>
         <div class="chips layers"></div>
+        <div class="chips centers"></div>
         <div class="viewport">
           <img alt="" />
+          <div class="markers"></div>
           <div class="time" hidden><span class="label"></span><span class="badge" hidden>${text.now}</span></div>
           <div class="credits"></div>
+          <button class="map-button move-left" title="${text.move.left}" hidden><ha-icon icon="mdi:chevron-left"></ha-icon></button>
+          <button class="map-button move-right" title="${text.move.right}" hidden><ha-icon icon="mdi:chevron-right"></ha-icon></button>
+          <button class="map-button move-up" title="${text.move.up}" hidden><ha-icon icon="mdi:chevron-up"></ha-icon></button>
+          <button class="map-button move-down" title="${text.move.down}" hidden><ha-icon icon="mdi:chevron-down"></ha-icon></button>
+          <button class="map-button recenter" title="${text.recenter}" hidden><ha-icon icon="mdi:crosshairs"></ha-icon></button>
           <div class="status" hidden></div>
         </div>
         <div class="controls">
@@ -219,6 +285,11 @@ class WetterOnlineRadarCard extends HTMLElement {
     });
     root.querySelector(".zoom-in").addEventListener("click", () => this._zoom(1));
     root.querySelector(".zoom-out").addEventListener("click", () => this._zoom(-1));
+    root.querySelector(".move-left").addEventListener("click", () => this._move(-1, 0));
+    root.querySelector(".move-right").addEventListener("click", () => this._move(1, 0));
+    root.querySelector(".move-up").addEventListener("click", () => this._move(0, -1));
+    root.querySelector(".move-down").addEventListener("click", () => this._move(0, 1));
+    root.querySelector(".recenter").addEventListener("click", () => this._select({ pan_x: 0, pan_y: 0 }));
     root.querySelector("input").addEventListener("input", (event) => {
       this._pause();
       this._show(Number(event.target.value));
@@ -231,6 +302,7 @@ class WetterOnlineRadarCard extends HTMLElement {
     let startX = null;
     let startIndex = 0;
     viewport.addEventListener("pointerdown", (event) => {
+      if (event.target.closest("button")) return;
       startX = event.clientX;
       startIndex = this._index;
     });
@@ -260,6 +332,12 @@ class WetterOnlineRadarCard extends HTMLElement {
       for (const [key, value] of Object.entries(this._selection)) {
         if (value !== undefined && value !== null && value !== "") params.set(key, value);
       }
+      const center = this._centerPoint();
+      if (center) {
+        params.set("lat", center.latitude.toFixed(5));
+        params.set("lon", center.longitude.toFixed(5));
+      }
+
       const response = await this._hass.fetchWithAuth(
         `${API_URL}/${encodeURIComponent(this._config.entity)}?${params}`
       );
@@ -294,12 +372,15 @@ class WetterOnlineRadarCard extends HTMLElement {
       const samePeriod = this._data && this._data.period === data.period;
       this._frames = frames;
       this._data = { ...data, now: new Date(data.now) };
-      this._selection = { layer: data.layer, period: data.period, zoom: data.zoom };
+      this._selection = { layer: data.layer, period: data.period, zoom: data.zoom, pan_x: data.pan_x, pan_y: data.pan_y };
+      this._trackerKey = JSON.stringify(this._trackerPoint());
       const kept = samePeriod ? frames.findIndex((frame) => frame.id === keepId) : -1;
       this._index = kept >= 0 ? kept : this._nowIndex();
       previous.forEach((frame) => URL.revokeObjectURL(frame.url));
       this._setStatus();
       this._renderChips();
+      this._renderCenters();
+      this._renderMarkers();
       this._renderTimeline();
       this._show(this._index);
       this._syncPlayback();
@@ -380,6 +461,98 @@ class WetterOnlineRadarCard extends HTMLElement {
     const zoomLevels = this._data.zoom_levels;
     root.querySelector(".zoom-in").disabled = this._data.zoom >= zoomLevels[zoomLevels.length - 1];
     root.querySelector(".zoom-out").disabled = this._data.zoom <= zoomLevels[0];
+    const { pan_x: panX, pan_y: panY, max_pan: maxPan } = this._data;
+    root.querySelector(".move-left").hidden = panX <= -maxPan;
+    root.querySelector(".move-right").hidden = panX >= maxPan;
+    root.querySelector(".move-up").hidden = panY <= -maxPan;
+    root.querySelector(".move-down").hidden = panY >= maxPan;
+    root.querySelector(".recenter").hidden = !panX && !panY;
+  }
+
+  _trackerPoint() {
+    const hass = this._hass;
+    if (!hass) return null;
+    let entityId = this._config.tracker;
+    if (!entityId) {
+      // By default "my location" is the person of the user looking at the card.
+      const person = Object.values(hass.states).find(
+        (state) => state.entity_id.startsWith("person.") && state.attributes.user_id === hass.user?.id
+      );
+      entityId = person?.entity_id;
+    }
+    const attributes = (entityId && hass.states[entityId]?.attributes) || {};
+    const { latitude, longitude } = attributes;
+    return typeof latitude === "number" && typeof longitude === "number" ? { latitude, longitude } : null;
+  }
+
+  _centers() {
+    const text = textFor(this._hass);
+    const centers = [{ key: "location", label: this._data?.location?.name || "WetterOnline", ...this._data?.location }];
+    const tracker = this._trackerPoint();
+    if (tracker) centers.push({ key: "tracker", label: text.myLocation, ...tracker });
+    this._config.places.forEach((place, index) => {
+      centers.push({ ...place, key: `place:${index}`, label: place.name || `${place.latitude}, ${place.longitude}` });
+    });
+    return centers;
+  }
+
+  _centerPoint() {
+    // The WetterOnline location is the default center, so it needs no coordinates.
+    if (this._center === "location") return null;
+    return this._centers().find((center) => center.key === this._center) || null;
+  }
+
+  _trackerLeftCenter() {
+    // Reload only once the phone is an eighth of the view away from the loaded center,
+    // so GPS jitter does not reload the frames again and again.
+    const tracker = this._trackerPoint();
+    if (!tracker) return false;
+    const { view, pan_x: panX, pan_y: panY } = this._data;
+    const [x, y] = worldPixel(tracker.latitude, tracker.longitude, view.zoom);
+    const centerX = view.x + (view.size / 2) * (1 - panX);
+    const centerY = view.y + (view.size / 2) * (1 - panY);
+    return Math.hypot(x - centerX, y - centerY) > view.size / 8;
+  }
+
+  _renderCenters() {
+    const row = this.shadowRoot.querySelector(".centers");
+    const centers = this._centers();
+    // Without its position, e.g. without GPS, the map shows the WetterOnline location.
+    const active = centers.some((center) => center.key === this._center) ? this._center : "location";
+    row.hidden = centers.length < 2;
+    row.replaceChildren(
+      ...centers.map((center) =>
+        this._chip(center.label, center.key === active, () => {
+          this._center = center.key;
+          this._select({ pan_x: 0, pan_y: 0 });
+        })
+      )
+    );
+  }
+
+  _renderMarkers() {
+    const container = this.shadowRoot.querySelector(".markers");
+    const { view, location } = this._data;
+    const points = [{ ...location, color: MARKER_COLORS.location }];
+    const tracker = this._trackerPoint();
+    if (tracker) points.push({ ...tracker, color: MARKER_COLORS.tracker });
+    if (this._center.startsWith("place:")) points.push({ ...this._centerPoint(), color: MARKER_COLORS.place });
+    container.replaceChildren(
+      ...points
+        .map((point) => {
+          const [x, y] = worldPixel(point.latitude, point.longitude, view.zoom);
+          return { ...point, left: ((x - view.x) / view.size) * 100, top: ((y - view.y) / view.size) * 100 };
+        })
+        .filter((point) => point.left >= 0 && point.left <= 100 && point.top >= 0 && point.top <= 100)
+        .map((point) => {
+          const marker = document.createElement("div");
+          marker.className = "marker";
+          marker.style.left = `${point.left}%`;
+          marker.style.top = `${point.top}%`;
+          marker.style.background = point.color;
+          return marker;
+        })
+    );
   }
 
   _chip(label, selected, onClick) {
@@ -513,9 +686,19 @@ class WetterOnlineRadarCard extends HTMLElement {
 
   _zoom(delta) {
     const levels = this._data?.zoom_levels || [];
-    const index = levels.indexOf(this._data?.zoom);
-    const next = levels[index + delta];
-    if (next !== undefined) this._select({ zoom: next });
+    const next = levels[levels.indexOf(this._data?.zoom) + delta];
+    if (next === undefined) return;
+    // Keep roughly the same section: one step is half a view, which doubles per level.
+    const maxPan = 2 ** (next - levels[0]) - 1;
+    const scale = (pan) => Math.max(-maxPan, Math.min(maxPan, delta > 0 ? pan * 2 : Math.round(pan / 2)));
+    this._select({ zoom: next, pan_x: scale(this._data.pan_x), pan_y: scale(this._data.pan_y) });
+  }
+
+  _move(dx, dy) {
+    const { pan_x: panX, pan_y: panY, max_pan: maxPan } = this._data || {};
+    if (maxPan === undefined) return;
+    const clamp = (pan) => Math.max(-maxPan, Math.min(maxPan, pan));
+    this._select({ pan_x: clamp(panX + dx), pan_y: clamp(panY + dy) });
   }
 }
 
@@ -536,7 +719,7 @@ window.customCards = window.customCards || [];
 window.customCards.push({
   type: "wetteronline-radar-card",
   name: "WetterOnline Radar",
-  description: "Weather, rain, and cloud radar of the WetterOnline integration with day selection, pause, and zoom.",
+  description: "Weather, rain, and cloud radar of the WetterOnline integration with day selection, pause, zoom, and your location.",
   preview: false,
   documentationURL: "https://github.com/GLG9/home-assistant-wetteronline",
 });
