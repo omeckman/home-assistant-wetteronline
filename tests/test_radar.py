@@ -1,6 +1,7 @@
 """Radar projection tests."""
 
 import base64
+from datetime import UTC, datetime, timedelta
 from io import BytesIO
 from unittest.mock import AsyncMock
 from urllib.parse import parse_qs, urlparse
@@ -8,6 +9,7 @@ from urllib.parse import parse_qs, urlparse
 from aiohttp import ClientSession
 from freezegun.api import FrozenDateTimeFactory
 from homeassistant.core import HomeAssistant
+from homeassistant.util import dt as dt_util
 from PIL import Image
 
 from custom_components.wetteronline.camera import (
@@ -17,6 +19,8 @@ from custom_components.wetteronline.camera import (
     TOMORROW,
     WEATHER,
     RadarRenderer,
+    Timeline,
+    _label,
     _world,
 )
 
@@ -205,3 +209,35 @@ async def test_forecast_animation_loops_before_dashboard_refresh() -> None:
     image = Image.open(BytesIO(animation))
     assert image.n_frames == 24
     assert image.info["duration"] * image.n_frames <= 9000
+
+
+async def test_frame_label_uses_local_weekday_and_language(hass: HomeAssistant) -> None:
+    await hass.config.async_set_time_zone("Europe/Berlin")
+    time = datetime(2026, 11, 13, 14, 0, tzinfo=UTC)
+
+    assert _label(time, "de") == "Fr 15:00"
+    assert _label(time, "en") == "Fri 15:00"
+    assert RadarRenderer(None, 0, 0, language="de-CH").language == "de"  # type: ignore[arg-type]
+    assert RadarRenderer(None, 0, 0, language="fr").language == "en"  # type: ignore[arg-type]
+
+
+def test_timeline_marks_now() -> None:
+    now = datetime(2026, 11, 13, 5, 35, tzinfo=UTC)
+    current = [now - timedelta(minutes=90), now + timedelta(minutes=90)]
+    today = [datetime(2026, 11, 13, 6, tzinfo=UTC), datetime(2026, 11, 14, 6, tzinfo=UTC)]
+    tomorrow = [datetime(2026, 11, 13, 23, tzinfo=UTC), datetime(2026, 11, 14, 22, tzinfo=UTC)]
+
+    assert Timeline.for_frames(current, now).position(now) == 0.5
+    # Forecasts start at the next full hour, so the bar is extended back to now.
+    assert Timeline.for_frames(today, now) == Timeline(now, today[-1], now)
+    assert Timeline.for_frames(tomorrow, now).now is None
+
+
+async def test_timeline_ticks_use_local_hours(hass: HomeAssistant) -> None:
+    await hass.config.async_set_time_zone("Europe/Berlin")
+    timeline = Timeline(
+        datetime(2026, 11, 13, 23, tzinfo=UTC), datetime(2026, 11, 14, 22, tzinfo=UTC), None
+    )
+
+    local_hours = [dt_util.as_local(tick).hour for tick in timeline.ticks()]
+    assert local_hours == [0, 6, 12, 18]

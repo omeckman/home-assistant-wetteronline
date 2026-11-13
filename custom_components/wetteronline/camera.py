@@ -9,6 +9,7 @@ from collections import defaultdict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from functools import cache
 from io import BytesIO
 from typing import Any, override
 from urllib.parse import urlencode
@@ -19,7 +20,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.util import dt as dt_util
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 
 from . import WetterOnlineConfigEntry
 from .const import ATTRIBUTION, RADAR_INTERVAL
@@ -35,6 +36,13 @@ HEADERS = {
 ANIMATION_LOOP_MS = 9000
 MAX_FRAME_MS = 650
 MAX_PARALLEL_TILES = 8
+# Part of the GIF web palette, so the timeline is not dithered.
+ACCENT = "#0099cc"
+WEEKDAYS = {
+    "de": ("Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"),
+    "en": ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"),
+}
+NOW_LABELS = {"de": "jetzt", "en": "now"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,9 +124,51 @@ def _step_time(step_id: str) -> datetime | None:
         return None
 
 
-def _label(step_id: str) -> str:
-    time = _step_time(step_id)
-    return f"{dt_util.as_local(time):%d.%m. %H:%M}" if time else step_id
+def _label(time: datetime, language: str) -> str:
+    local = dt_util.as_local(time)
+    return f"{WEEKDAYS[language][local.weekday()]} {local:%H:%M}"
+
+
+@cache
+def _font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    return ImageFont.load_default(size)
+
+
+@dataclass(frozen=True, slots=True)
+class Timeline:
+    """Time range shown as a progress bar below animation frames."""
+
+    start: datetime
+    end: datetime
+    now: datetime | None
+
+    @classmethod
+    def for_frames(cls, times: list[datetime], now: datetime) -> Timeline:
+        """Span the frames and include now when a forecast starts at the next hour."""
+        start, end = times[0], times[-1]
+        if timedelta(0) < start - now <= timedelta(hours=1):
+            start = now
+        return cls(start, end, now if start <= now <= end else None)
+
+    def position(self, time: datetime) -> float:
+        """Return the relative position of a time on the bar."""
+        span = (self.end - self.start).total_seconds()
+        if span <= 0:
+            return 0.0
+        return min(max((time - self.start).total_seconds() / span, 0.0), 1.0)
+
+    def ticks(self) -> list[datetime]:
+        """Return local full hours at an interval that keeps the labels apart."""
+        hours = (self.end - self.start).total_seconds() / 3600
+        interval = 1 if hours <= 4 else 3 if hours <= 12 else 6
+        time = self.start.replace(minute=self.start.minute // 30 * 30, second=0, microsecond=0)
+        ticks = []
+        while time <= self.end:
+            local = dt_util.as_local(time)
+            if time >= self.start and local.minute == 0 and local.hour % interval == 0:
+                ticks.append(time)
+            time += timedelta(minutes=30)
+        return ticks
 
 
 def _encode_gif(frames: list[Image.Image], duration: int) -> bytes:
@@ -140,12 +190,18 @@ class RadarRenderer:
     """Fetch public radar layers and render them around a location."""
 
     def __init__(
-        self, session: ClientSession, latitude: float, longitude: float, layer: RadarLayer = RAIN
+        self,
+        session: ClientSession,
+        latitude: float,
+        longitude: float,
+        layer: RadarLayer = RAIN,
+        language: str = "en",
     ) -> None:
         self.session = session
         self.latitude = latitude
         self.longitude = longitude
         self.layer = layer
+        self.language = language.split("-")[0] if language.split("-")[0] in WEEKDAYS else "en"
         self._base: tuple[bytes, bytes | None] | None = None
         self._cache: dict[str, tuple[datetime, bytes]] = {}
         self._locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
@@ -272,7 +328,11 @@ class RadarRenderer:
         return tiles
 
     def _compose_frame(
-        self, base: tuple[bytes, bytes | None], radar_layers: list[bytes], label: str
+        self,
+        base: tuple[bytes, bytes | None],
+        radar_layers: list[bytes],
+        step_id: str,
+        timeline: Timeline | None = None,
     ) -> Image.Image:
         background, overlay = base
         image = Image.open(BytesIO(background)).convert("RGBA")
@@ -291,10 +351,73 @@ class RadarRenderer:
             width=3,
         )
         image = image.crop(self._crop)
-        draw = ImageDraw.Draw(image)
-        draw.rectangle((0, 738, 768, 768), fill=(0, 0, 0, 175))
-        draw.text((10, 746), f"{label} · {self.layer.credits}", fill="white")
+        self._draw_footer(image, step_id, timeline)
         return image
+
+    def _draw_footer(self, image: Image.Image, step_id: str, timeline: Timeline | None) -> None:
+        time = _step_time(step_id)
+        width, height = image.size
+        top = height - (120 if timeline and time else 68)
+        band = Image.new("RGBA", image.size)
+        ImageDraw.Draw(band).rectangle((0, top, width, height), fill=(0, 0, 0, 170))
+        image.alpha_composite(band)
+        draw = ImageDraw.Draw(image)
+        draw.text(
+            (18, top + 6),
+            _label(time, self.language) if time else step_id,
+            fill="white",
+            font=_font(50),
+            stroke_width=1,
+            stroke_fill="white",
+        )
+        credits_font = _font(17)
+        credits_x = width - 18 - draw.textlength(self.layer.credits, font=credits_font)
+        draw.text((credits_x, top + 26), self.layer.credits, fill="#d0d0d0", font=credits_font)
+        if timeline and time:
+            self._draw_timeline(draw, timeline, time, top + 70, width)
+
+    def _draw_timeline(
+        self, draw: ImageDraw.ImageDraw, timeline: Timeline, time: datetime, y: int, width: int
+    ) -> None:
+        left, right = 28, width - 28
+        font = _font(20)
+
+        def x_at(moment: datetime) -> float:
+            return left + (right - left) * timeline.position(moment)
+
+        def text_left(x: float, text: str) -> float:
+            text_width = draw.textlength(text, font=font)
+            return min(max(x - text_width / 2, 4), width - 4 - text_width)
+
+        now_text = NOW_LABELS[self.language]
+        now_x = x_at(timeline.now) if timeline.now else None
+        now_left = text_left(now_x, now_text) if now_x is not None else None
+        now_right = (now_left or 0) + draw.textlength(now_text, font=font)
+        for tick in timeline.ticks():
+            x = x_at(tick)
+            draw.line((x, y - 4, x, y + 18), fill="#a0a0a0", width=2)
+            text = f"{dt_util.as_local(tick):%H:%M}"
+            tick_left = text_left(x, text)
+            tick_right = tick_left + draw.textlength(text, font=font)
+            if now_left is not None and tick_left < now_right + 10 and tick_right > now_left - 10:
+                continue
+            draw.text((tick_left, y + 22), text, fill="#d0d0d0", font=font)
+        draw.rounded_rectangle((left, y, right, y + 14), radius=7, fill="#5a5a5a")
+        frame_x = x_at(time)
+        draw.rounded_rectangle((left, y, max(frame_x, left + 14), y + 14), radius=7, fill=ACCENT)
+        if now_x is not None and now_left is not None:
+            draw.line((now_x, y - 10, now_x, y + 22), fill="white", width=4)
+            draw.text(
+                (now_left, y + 22),
+                now_text,
+                fill="white",
+                font=font,
+                stroke_width=1,
+                stroke_fill="white",
+            )
+        draw.ellipse(
+            (frame_x - 12, y - 5, frame_x + 12, y + 19), fill=ACCENT, outline="white", width=3
+        )
 
     def _animation_steps(
         self, period: RadarPeriod, metadata: dict[str, Any]
@@ -346,7 +469,7 @@ class RadarRenderer:
         metadata, base = await asyncio.gather(self._metadata(CURRENT), self._base_map())
         step = metadata["timesteps"][metadata["defaultIndex"]]
         radar = await self._radar_layers(step)
-        image = await asyncio.to_thread(self._compose_frame, base, radar, _label(step["id"]))
+        image = await asyncio.to_thread(self._compose_frame, base, radar, step["id"])
         out = BytesIO()
         await asyncio.to_thread(image.convert("RGB").save, out, "PNG")
         return out.getvalue()
@@ -357,13 +480,19 @@ class RadarRenderer:
         layers = await asyncio.gather(
             *(self._radar_layers(step) for step in steps), return_exceptions=True
         )
-        frames = [
-            await asyncio.to_thread(self._compose_frame, base, layer, _label(step["id"]))
+        available = [
+            (step["id"], layer)
             for step, layer in zip(steps, layers, strict=True)
             if isinstance(layer, list)
         ]
-        if not frames:
+        if not available:
             return None
+        times = [time for step_id, _ in available if (time := _step_time(step_id))]
+        timeline = Timeline.for_frames(times, dt_util.utcnow()) if times else None
+        frames = [
+            await asyncio.to_thread(self._compose_frame, base, layer, step_id, timeline)
+            for step_id, layer in available
+        ]
         duration = min(MAX_FRAME_MS, ANIMATION_LOOP_MS // len(frames))
         return await asyncio.to_thread(_encode_gif, frames, duration)
 
@@ -380,7 +509,9 @@ async def async_setup_entry(
     async_add_entities(
         WetterOnlineRadarCamera(coordinator, renderer, period)
         for renderer in (
-            RadarRenderer(session, location.latitude, location.longitude, layer)
+            RadarRenderer(
+                session, location.latitude, location.longitude, layer, hass.config.language
+            )
             for layer in (WEATHER, RAIN, CLOUDS)
         )
         for period in (None, CURRENT, TODAY, TOMORROW)
