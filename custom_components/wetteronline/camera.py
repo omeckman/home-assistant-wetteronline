@@ -39,9 +39,13 @@ HEADERS = {
 ANIMATION_LOOP_MS = 9000
 MAX_FRAME_MS = 650
 MAX_PARALLEL_TILES = 8
-# Map zoom levels for the radar card; radar data has native zoom-7 tiles.
-ZOOM_LEVELS = (7, 8, 9, 10)
+# Map zoom levels for the radar card; radar data has native zoom-7 tiles. At higher
+# levels the card can move the view in half-view steps within the zoom-7 view.
+ZOOM_LEVELS = (7, 8, 9)
 DEFAULT_ZOOM = 8
+# Rendered card frame sets and base maps kept in memory per renderer.
+MAX_CACHED_RESULTS = 24
+MAX_CACHED_BASE_MAPS = 12
 # Part of the GIF web palette, so the timeline is not dithered.
 ACCENT = "#0099cc"
 WEEKDAYS = {
@@ -141,6 +145,11 @@ def _world(latitude: float, longitude: float, zoom: int = 8) -> tuple[float, flo
     )
 
 
+def max_pan(zoom: int) -> int:
+    """Return how many half-view steps the view can move from its center."""
+    return 2 ** (zoom - ZOOM_LEVELS[0]) - 1
+
+
 @dataclass(frozen=True, slots=True)
 class MapView:
     """The 768 px map section around a location at one zoom level."""
@@ -150,29 +159,50 @@ class MapView:
     top: int
     columns: int
     rows: int
+    center: tuple[int, int]
     marker: tuple[int, int]
 
     @classmethod
-    def around(cls, latitude: float, longitude: float, zoom: int) -> MapView:
-        """Center the view on a location."""
+    def around(
+        cls,
+        latitude: float,
+        longitude: float,
+        zoom: int,
+        pan_x: int = 0,
+        pan_y: int = 0,
+        snap: bool = False,
+    ) -> MapView:
+        """Center the view on a location, optionally snapped and moved by half views."""
         world_x, world_y = _world(latitude, longitude, zoom)
+        center_x, center_y = world_x, world_y
+        if snap:
+            # Nearby centers share their frames, e.g. while a phone moves a little.
+            center_x, center_y = round(world_x * 2) / 2, round(world_y * 2) / 2
+        center_x += pan_x * 1.5
+        center_y += pan_y * 1.5
         # The view spans three or four tiles per axis, fetched as 2x2 blocks.
-        left = math.floor(world_x - 1.5) // 2 * 2
-        top = math.floor(world_y - 1.5) // 2 * 2
+        left = math.floor(center_x - 1.5) // 2 * 2
+        top = math.floor(center_y - 1.5) // 2 * 2
         return cls(
             zoom=zoom,
             left=left,
             top=top,
-            columns=(math.floor(world_x + 1.5) - left) // 2 + 1,
-            rows=(math.floor(world_y + 1.5) - top) // 2 + 1,
+            columns=(math.floor(center_x + 1.5) - left) // 2 + 1,
+            rows=(math.floor(center_y + 1.5) - top) // 2 + 1,
+            center=(int((center_x - left) * 256), int((center_y - top) * 256)),
             marker=(int((world_x - left) * 256), int((world_y - top) * 256)),
         )
 
     @property
     def crop(self) -> tuple[int, int, int, int]:
-        """Return the 768 px section centered on the location."""
-        x, y = self.marker
+        """Return the 768 px section around the center."""
+        x, y = self.center
         return (x - 384, y - 384, x + 384, y + 384)
+
+    @property
+    def origin(self) -> tuple[int, int]:
+        """Return the world pixel of the top-left corner of the section."""
+        return (self.left * 256 + self.crop[0], self.top * 256 + self.crop[1])
 
     @property
     def origins(self) -> list[tuple[int, int]]:
@@ -186,11 +216,12 @@ class MapView:
 
 @dataclass(frozen=True, slots=True)
 class RadarFrames:
-    """Radar frames without footer for the radar card."""
+    """Radar frames without footer and marker for the radar card."""
 
     step_ids: tuple[str, ...]
     images: tuple[bytes, ...]
     timeline: Timeline | None
+    view: MapView
 
 
 def _layer_path(layer: dict[str, Any], time_path: list[str]) -> str:
@@ -304,16 +335,26 @@ class RadarRenderer:
         self.layer = layer
         self.language = language.split("-")[0] if language.split("-")[0] in WEEKDAYS else "en"
         self.footer_at_top = footer_at_top
-        self._base: dict[int, tuple[bytes, bytes | None]] = {}
+        self._base: dict[tuple[int, int, int, int, int], tuple[bytes, bytes | None]] = {}
         self._cache: dict[str, tuple[datetime, Any]] = {}
         self._locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         self._tile_limit = asyncio.Semaphore(MAX_PARALLEL_TILES)
 
-    def view(self, zoom: int = DEFAULT_ZOOM) -> MapView:
-        """Return the map section around the location at a supported zoom level."""
+    def view(
+        self,
+        zoom: int = DEFAULT_ZOOM,
+        pan_x: int = 0,
+        pan_y: int = 0,
+        center: tuple[float, float] | None = None,
+        snap: bool = False,
+    ) -> MapView:
+        """Return a map section at a supported zoom level, by default around the location."""
         if zoom not in ZOOM_LEVELS:
             raise ValueError(f"Unsupported zoom level {zoom}")
-        return MapView.around(self.latitude, self.longitude, zoom)
+        if abs(pan_x) > max_pan(zoom) or abs(pan_y) > max_pan(zoom):
+            raise ValueError(f"Unsupported move {pan_x}, {pan_y} at zoom level {zoom}")
+        latitude, longitude = center or (self.latitude, self.longitude)
+        return MapView.around(latitude, longitude, zoom, pan_x, pan_y, snap)
 
     async def _get_json(self, params: dict[str, str]) -> dict[str, Any]:
         async with self.session.get(METADATA_URL, params=params, headers=HEADERS) as response:
@@ -338,12 +379,18 @@ class RadarRenderer:
 
     async def _base_map(self, view: MapView) -> tuple[bytes, bytes | None]:
         """Return the cached background and the optional overlay drawn above the radar."""
-        if view.zoom not in self._base:
+        key = (view.zoom, view.left, view.top, view.columns, view.rows)
+        base = self._base.pop(key, None)
+        if base is None:
             if self.layer.wetteronline_map:
-                self._base[view.zoom] = await self._wetteronline_map(view)
+                base = await self._wetteronline_map(view)
             else:
-                self._base[view.zoom] = (await self._osm_map(view), None)
-        return self._base[view.zoom]
+                base = (await self._osm_map(view), None)
+        # Keep the most recently used base maps.
+        self._base[key] = base
+        while len(self._base) > MAX_CACHED_BASE_MAPS:
+            del self._base[next(iter(self._base))]
+        return base
 
     async def _osm_map(self, view: MapView) -> bytes:
         urls = [
@@ -435,6 +482,7 @@ class RadarRenderer:
         view: MapView,
         timeline: Timeline | None = None,
         footer: bool = True,
+        marker: bool = True,
     ) -> Image.Image:
         background, overlay = base
         image = Image.open(BytesIO(background)).convert("RGBA")
@@ -444,14 +492,14 @@ class RadarRenderer:
                 image.alpha_composite(layer, ((x - view.left) * 256, (y - view.top) * 256))
         if overlay:
             image.alpha_composite(Image.open(BytesIO(overlay)).convert("RGBA"))
-        draw = ImageDraw.Draw(image)
-        px, py = view.marker
-        draw.ellipse(
-            (px - 10, py - 10, px + 10, py + 10),
-            fill="#00a7d1",
-            outline="white",
-            width=3,
-        )
+        if marker:
+            px, py = view.marker
+            ImageDraw.Draw(image).ellipse(
+                (px - 10, py - 10, px + 10, py + 10),
+                fill="#00a7d1",
+                outline="white",
+                width=3,
+            )
         image = image.crop(view.crop)
         if footer:
             self._draw_footer(image, step_id, timeline)
@@ -575,12 +623,11 @@ class RadarRenderer:
                 result = None
             if result is None:
                 return cached[1] if cached else None
-            now = datetime.now(UTC)
-            # Drop results nobody asked for again within a day, e.g. unused card zoom levels.
-            for old_key, (created, _) in list(self._cache.items()):
-                if now - created > timedelta(days=1):
-                    del self._cache[old_key]
-            self._cache[key] = (now, result)
+            # Keep the most recently rendered results, e.g. of the card's map sections.
+            self._cache.pop(key, None)
+            self._cache[key] = (datetime.now(UTC), result)
+            while len(self._cache) > MAX_CACHED_RESULTS:
+                del self._cache[next(iter(self._cache))]
             return result
 
     async def current(self) -> bytes | None:
@@ -593,17 +640,24 @@ class RadarRenderer:
             period.key, period.max_age, lambda: self._render_animation(period)
         )
 
-    async def frames(self, period: RadarPeriod | None, zoom: int) -> RadarFrames | None:
+    async def frames(
+        self,
+        period: RadarPeriod | None,
+        zoom: int = DEFAULT_ZOOM,
+        pan_x: int = 0,
+        pan_y: int = 0,
+        center: tuple[float, float] | None = None,
+    ) -> RadarFrames | None:
         """Return cached single frames for the radar card; no period means the current one."""
-        view = self.view(zoom)
+        view = self.view(zoom, pan_x, pan_y, center, snap=True)
         return await self._cached(
-            f"frames_{period.key if period else 'current'}_{zoom}",
+            f"frames_{period.key if period else 'current'}_{zoom}_{view.origin}",
             period.max_age if period else RADAR_INTERVAL,
             lambda: self._render_card_frames(period, view),
         )
 
     async def _render_frames(
-        self, period: RadarPeriod | None, view: MapView, footer: bool
+        self, period: RadarPeriod | None, view: MapView, footer: bool, marker: bool = True
     ) -> tuple[list[tuple[str, Image.Image]], Timeline | None] | None:
         now = dt_util.now()
         steps, base = await asyncio.gather(self._animation_steps(period, now), self._base_map(view))
@@ -627,7 +681,7 @@ class RadarRenderer:
             (
                 step_id,
                 await asyncio.to_thread(
-                    self._compose_frame, base, layer, step_id, view, timeline, footer
+                    self._compose_frame, base, layer, step_id, view, timeline, footer, marker
                 ),
             )
             for step_id, layer in available
@@ -653,12 +707,13 @@ class RadarRenderer:
     async def _render_card_frames(
         self, period: RadarPeriod | None, view: MapView
     ) -> RadarFrames | None:
-        rendered = await self._render_frames(period, view, footer=False)
+        # The card draws the markers itself, so frames of nearby centers can be shared.
+        rendered = await self._render_frames(period, view, footer=False, marker=False)
         if rendered is None:
             return None
         frames, timeline = rendered
         images = [await asyncio.to_thread(_encode_webp, frame) for _, frame in frames]
-        return RadarFrames(tuple(step_id for step_id, _ in frames), tuple(images), timeline)
+        return RadarFrames(tuple(step_id for step_id, _ in frames), tuple(images), timeline, view)
 
 
 async def async_setup_entry(
