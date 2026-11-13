@@ -8,6 +8,18 @@
     "error": {"cannot_connect": "Cannot connect to WetterOnline.", "invalid_location": "No valid WetterOnline weather data was found for this location."},
     "abort": {"already_configured": "This WetterOnline location is already configured.", "unique_id_mismatch": "The selected location does not match the configured location.", "reconfigure_successful": "The WetterOnline location was updated."}
   },
+  "options": {
+    "step": {
+      "init": {
+        "title": "WetterOnline options",
+        "data": {"timeline_position": "Time and timeline position"},
+        "data_description": {"timeline_position": "Where radar images show the time and the timeline."}
+      }
+    }
+  },
+  "selector": {
+    "timeline_position": {"options": {"bottom": "Bottom", "top": "Top"}}
+  },
   "entity": {
     "binary_sensor": {"weather_warning": {"name": "Weather warning"}},
     "camera": {

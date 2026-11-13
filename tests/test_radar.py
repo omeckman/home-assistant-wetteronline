@@ -285,3 +285,26 @@ async def test_timeline_ticks_use_local_hours(hass: HomeAssistant) -> None:
     assert local_hours == [0, 6, 12, 18]
     day = Timeline.for_day(date(2026, 11, 14), datetime(2026, 11, 13, tzinfo=UTC))
     assert [dt_util.as_local(tick).hour for tick in day.ticks()] == [0, 6, 12, 18, 0]
+
+
+async def test_footer_can_be_drawn_at_the_top() -> None:
+    async with ClientSession() as session:
+        bottom = RadarRenderer(session, 52.517, 13.4)
+        top = RadarRenderer(session, 52.517, 13.4, footer_at_top=True)
+        for renderer in (bottom, top):
+            renderer._metadata = AsyncMock(  # type: ignore[method-assign]
+                return_value={"defaultIndex": 0, "timesteps": [{"id": "20261113-0530-1"}]}
+            )
+            renderer._base_map = AsyncMock(return_value=_base_map())  # type: ignore[method-assign]
+            renderer._radar_layers = AsyncMock(  # type: ignore[method-assign]
+                return_value=[b"", b"", b"", b""]
+            )
+
+        bottom_image = Image.open(BytesIO(await bottom.current()))
+        top_image = Image.open(BytesIO(await top.current()))
+
+    map_color = (220, 231, 237)
+    assert bottom_image.getpixel((700, 2)) == map_color
+    assert bottom_image.getpixel((700, 765)) != map_color
+    assert top_image.getpixel((700, 2)) != map_color
+    assert top_image.getpixel((700, 765)) == map_color

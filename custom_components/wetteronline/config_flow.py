@@ -6,12 +6,30 @@ from asyncio import timeout
 from typing import Any
 
 import voluptuous as vol
-from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
+from homeassistant.config_entries import (
+    ConfigEntry,
+    ConfigFlow,
+    ConfigFlowResult,
+    OptionsFlowWithReload,
+)
+from homeassistant.core import callback
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.selector import (
+    SelectSelector,
+    SelectSelectorConfig,
+    SelectSelectorMode,
+)
 
-from .const import CONF_LOCATION, CONF_LOCATION_ID, DOMAIN
+from .const import (
+    CONF_LOCATION,
+    CONF_LOCATION_ID,
+    CONF_TIMELINE_POSITION,
+    DOMAIN,
+    TIMELINE_BOTTOM,
+    TIMELINE_TOP,
+)
 from .wetteronline_api import (
     SearchResult,
     WetterOnline,
@@ -28,6 +46,12 @@ class WetterOnlineFlowHandler(ConfigFlow, domain=DOMAIN):
     VERSION = 2
     _results: dict[str, SearchResult]
     _reconfigure = False
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(config_entry: ConfigEntry) -> WetterOnlineOptionsFlow:
+        """Return the options flow."""
+        return WetterOnlineOptionsFlow()
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Accept a place search, path, or complete URL."""
@@ -144,3 +168,31 @@ class WetterOnlineFlowHandler(ConfigFlow, domain=DOMAIN):
             )
         self._abort_if_unique_id_configured()
         return self.async_create_entry(title=data.location.name, data=entry_data)
+
+
+class WetterOnlineOptionsFlow(OptionsFlowWithReload):
+    """Change how WetterOnline radar images are drawn."""
+
+    async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        """Choose where radar images show the time and timeline."""
+        if user_input is not None:
+            return self.async_create_entry(data=user_input)
+        return self.async_show_form(
+            step_id="init",
+            data_schema=self.add_suggested_values_to_schema(
+                vol.Schema(
+                    {
+                        vol.Required(
+                            CONF_TIMELINE_POSITION, default=TIMELINE_BOTTOM
+                        ): SelectSelector(
+                            SelectSelectorConfig(
+                                options=[TIMELINE_BOTTOM, TIMELINE_TOP],
+                                translation_key=CONF_TIMELINE_POSITION,
+                                mode=SelectSelectorMode.LIST,
+                            )
+                        )
+                    }
+                ),
+                self.config_entry.options,
+            ),
+        )

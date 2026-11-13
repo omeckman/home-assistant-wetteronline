@@ -23,7 +23,7 @@ from homeassistant.util import dt as dt_util
 from PIL import Image, ImageDraw, ImageFont
 
 from . import WetterOnlineConfigEntry
-from .const import ATTRIBUTION, RADAR_INTERVAL
+from .const import ATTRIBUTION, CONF_TIMELINE_POSITION, RADAR_INTERVAL, TIMELINE_TOP
 from .coordinator import WeatherOnlineDataUpdateCoordinator
 
 METADATA_URL = "https://tiles.wo-cloud.com/metadata"
@@ -224,12 +224,14 @@ class RadarRenderer:
         longitude: float,
         layer: RadarLayer = RAIN,
         language: str = "en",
+        footer_at_top: bool = False,
     ) -> None:
         self.session = session
         self.latitude = latitude
         self.longitude = longitude
         self.layer = layer
         self.language = language.split("-")[0] if language.split("-")[0] in WEEKDAYS else "en"
+        self.footer_at_top = footer_at_top
         self._base: tuple[bytes, bytes | None] | None = None
         self._cache: dict[str, tuple[datetime, bytes]] = {}
         self._locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
@@ -385,9 +387,10 @@ class RadarRenderer:
     def _draw_footer(self, image: Image.Image, step_id: str, timeline: Timeline | None) -> None:
         time = _step_time(step_id)
         width, height = image.size
-        top = height - (120 if timeline and time else 68)
+        footer_height = 120 if timeline and time else 68
+        top = 0 if self.footer_at_top else height - footer_height
         band = Image.new("RGBA", image.size)
-        ImageDraw.Draw(band).rectangle((0, top, width, height), fill=(0, 0, 0, 170))
+        ImageDraw.Draw(band).rectangle((0, top, width, top + footer_height), fill=(0, 0, 0, 170))
         image.alpha_composite(band)
         draw = ImageDraw.Draw(image)
         draw.text(
@@ -540,11 +543,17 @@ async def async_setup_entry(
     coordinator = entry.runtime_data
     location = coordinator.data.location
     session = async_get_clientsession(hass)
+    footer_at_top = entry.options.get(CONF_TIMELINE_POSITION) == TIMELINE_TOP
     async_add_entities(
         WetterOnlineRadarCamera(coordinator, renderer, period)
         for renderer in (
             RadarRenderer(
-                session, location.latitude, location.longitude, layer, hass.config.language
+                session,
+                location.latitude,
+                location.longitude,
+                layer,
+                hass.config.language,
+                footer_at_top,
             )
             for layer in (WEATHER, RAIN, CLOUDS)
         )

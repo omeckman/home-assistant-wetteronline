@@ -9,7 +9,13 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.wetteronline.const import CONF_LOCATION, CONF_LOCATION_ID, DOMAIN
+from custom_components.wetteronline.const import (
+    CONF_LOCATION,
+    CONF_LOCATION_ID,
+    CONF_TIMELINE_POSITION,
+    DOMAIN,
+    TIMELINE_TOP,
+)
 from custom_components.wetteronline.wetteronline_api import Location, WetterOnlineData
 
 
@@ -136,3 +142,37 @@ async def test_reconfigure_changes_location_and_registry_ids(hass: HomeAssistant
     assert entry.unique_id == "10382"
     assert entity_registry.async_get(weather.entity_id).unique_id == "10382_weather"
     assert device_registry.async_get(device.id).identifiers == {(DOMAIN, "10382")}
+
+
+async def test_options_flow_moves_timeline_and_reloads(hass: HomeAssistant) -> None:
+    """The timeline position is an option that reloads the radar cameras."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Berlin",
+        unique_id="10382",
+        version=2,
+        data={CONF_LOCATION: "/wetter/berlin", CONF_LOCATION_ID: "10382"},
+    )
+    entry.add_to_hass(hass)
+    with patch(
+        "custom_components.wetteronline.wetteronline_api.WetterOnline.async_get_weather",
+        new=AsyncMock(return_value=sample_data()),
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        result = await hass.config_entries.options.async_init(entry.entry_id)
+        assert result["type"] is FlowResultType.FORM
+        with patch.object(
+            hass.config_entries,
+            "async_schedule_reload",
+            wraps=hass.config_entries.async_schedule_reload,
+        ) as schedule_reload:
+            result = await hass.config_entries.options.async_configure(
+                result["flow_id"], {CONF_TIMELINE_POSITION: TIMELINE_TOP}
+            )
+            await hass.async_block_till_done()
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert entry.options == {CONF_TIMELINE_POSITION: TIMELINE_TOP}
+    schedule_reload.assert_called_once_with(entry.entry_id)

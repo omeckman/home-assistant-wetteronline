@@ -87,6 +87,9 @@ Alternatively:
 To change an existing location, open the integration entry and select
 **Reconfigure**. You can add the integration multiple times for different places.
 
+Select **Configure** on the integration entry to show the time and timeline of the
+radar images at the top instead of the bottom.
+
 ## Troubleshooting
 
 ### WetterOnline is not shown after installation

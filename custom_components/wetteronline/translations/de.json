@@ -8,6 +8,18 @@
     "error": {"cannot_connect": "Verbindung zu WetterOnline fehlgeschlagen.", "invalid_location": "Für diesen Ort wurden keine gültigen WetterOnline-Daten gefunden."},
     "abort": {"already_configured": "Dieser WetterOnline-Ort ist bereits eingerichtet.", "unique_id_mismatch": "Der gewählte Ort stimmt nicht mit dem eingerichteten Ort überein.", "reconfigure_successful": "Der WetterOnline-Ort wurde aktualisiert."}
   },
+  "options": {
+    "step": {
+      "init": {
+        "title": "WetterOnline-Optionen",
+        "data": {"timeline_position": "Position von Uhrzeit und Zeitleiste"},
+        "data_description": {"timeline_position": "Wo Radarbilder die Uhrzeit und die Zeitleiste anzeigen."}
+      }
+    }
+  },
+  "selector": {
+    "timeline_position": {"options": {"bottom": "Unten", "top": "Oben"}}
+  },
   "entity": {
     "binary_sensor": {"weather_warning": {"name": "Wetterwarnung"}},
     "camera": {
