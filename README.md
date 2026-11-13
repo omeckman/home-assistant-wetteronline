@@ -29,6 +29,7 @@ Unofficial Home Assistant integration for the freely accessible location pages o
   and cloud radar cameras, each as a current image, a current animation, and hourly
   animations for today (observed radar since midnight, then forecast), tomorrow, and
   in two to four days (disabled by default)
+- A radar dashboard card to switch map and day, pause, step through the hours, and zoom
 - Diagnostics and migration from the original 1.x config-entry format
 - Updates every 15 minutes
 
@@ -89,6 +90,38 @@ To change an existing location, open the integration entry and select
 
 Select **Configure** on the integration entry to show the time and timeline of the
 radar images at the top instead of the bottom.
+
+## Radar card
+
+The integration ships a dashboard card that shows the radar frames with controls
+instead of a fast-running animation. It is loaded automatically; no extra resource
+or HACS frontend repository is needed.
+
+- Switch between now, today, tomorrow, and the next three days
+- Switch between weather radar (clouds and precipitation), rain radar, and cloud radar
+- Play, pause, step frame by frame, drag the slider, or swipe over the map
+- Zoom in and out in four steps
+
+Add it with **Add card → WetterOnline Radar**, or in YAML:
+
+```yaml
+type: custom:wetteronline-radar-card
+entity: camera.berlin_weather_radar
+```
+
+`entity` can be any WetterOnline entity of the location; a radar camera also selects
+its map and period when the card opens. Optional settings:
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `title` | none | Card title |
+| `layer` | from the entity | Map when opened: `weather`, `rain`, or `clouds` |
+| `period` | from the entity | `animation` (now), `today`, `tomorrow`, `in_2_days`, `in_3_days`, or `in_4_days` |
+| `zoom` | `8` | Zoom level when opened, `7` to `10` |
+| `frame_duration` | `1000` | Milliseconds per frame while playing |
+| `autoplay` | `true` | Start playing when opened |
+| `periods` | all | Periods offered as buttons, for example `[animation, today, tomorrow]` |
+| `layers` | all | Maps offered as buttons, for example `[weather, rain]` |
 
 ## Troubleshooting
 
