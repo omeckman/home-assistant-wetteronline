@@ -1,4 +1,4 @@
-"""WetterOnline rain and cloud radar cameras."""
+"""WetterOnline weather, rain, and cloud radar cameras."""
 
 from __future__ import annotations
 
@@ -38,12 +38,19 @@ MAX_PARALLEL_TILES = 8
 
 
 @dataclass(frozen=True, slots=True)
-class RadarLayer:
-    """A WetterOnline map layer and the base map it is drawn on."""
+class RadarTiles:
+    """A WetterOnline tile layer that the composite service can render."""
 
     key: str
     composite_type: str
     tile_suffix: str
+
+
+@dataclass(frozen=True, slots=True)
+class RadarLayer:
+    """Tile layers drawn together on a base map."""
+
+    tiles: tuple[RadarTiles, ...]
     translation_key: str
     unique_id_key: str
     wetteronline_map: bool
@@ -59,21 +66,27 @@ class RadarPeriod:
     max_age: timedelta
 
 
+RAIN_TILES = RadarTiles(key="rain", composite_type="r", tile_suffix="/sprite")
+CLOUD_TILES = RadarTiles(key="clouds", composite_type="c", tile_suffix="")
 RAIN = RadarLayer(
-    key="rain",
-    composite_type="r",
-    tile_suffix="/sprite",
-    translation_key="weather_radar",
-    unique_id_key="radar",
+    tiles=(RAIN_TILES,),
+    translation_key="rain_radar",
+    unique_id_key="rain",
     wetteronline_map=False,
     credits="WetterOnline · © OpenStreetMap",
 )
 CLOUDS = RadarLayer(
-    key="clouds",
-    composite_type="c",
-    tile_suffix="",
+    tiles=(CLOUD_TILES,),
     translation_key="cloud_radar",
     unique_id_key="clouds",
+    wetteronline_map=True,
+    credits="WetterOnline",
+)
+# Like WetterOnline's WetterRadar; keeps the unique ids of the former rain-only cameras.
+WEATHER = RadarLayer(
+    tiles=(CLOUD_TILES, RAIN_TILES),
+    translation_key="weather_radar",
+    unique_id_key="radar",
     wetteronline_map=True,
     credits="WetterOnline",
 )
@@ -231,17 +244,22 @@ class RadarRenderer:
         x7, y7 = x0 // 4 * 2, y0 // 4 * 2
         quadrant_x, quadrant_y = x0 // 2 % 2, y0 // 2 % 2
         layers = timestep.get("layers") or {}
-        europe = (layers.get("europe") or {}).get(self.layer.key)
-        global_layer = (layers.get("global") or {}).get(self.layer.key)
-        if not europe or not global_layer:
+        entries = []
+        for tiles in self.layer.tiles:
+            europe = (layers.get("europe") or {}).get(tiles.key)
+            global_layer = (layers.get("global") or {}).get(tiles.key)
+            if not europe or not global_layer:
+                continue
+            border_time = global_layer.get("borderTimePath") or global_layer["timePath"]
+            entries.append(
+                f"{tiles.composite_type}|2;;{quadrant_x};{quadrant_y};false|"
+                f"{_layer_path(europe, europe['timePath'])}/ZL7/522{tiles.tile_suffix}/{x7}_{y7}.png;"
+                f"{_layer_path(global_layer, border_time)}/ZL7/522/border/{x7}_{y7}.png"
+            )
+        if not entries:
             raise ValueError("No WetterOnline radar layer for this timestep")
-        border_time = global_layer.get("borderTimePath") or global_layer["timePath"]
-        descriptor = (
-            f"{self.layer.composite_type}|2;;{quadrant_x};{quadrant_y};false|"
-            f"{_layer_path(europe, europe['timePath'])}/ZL7/522{self.layer.tile_suffix}/{x7}_{y7}.png;"
-            f"{_layer_path(global_layer, border_time)}/ZL7/522/border/{x7}_{y7}.png"
-        )
-        return await self._composite(descriptor, timestep["id"])
+        # The composite service draws "$"-separated entries in order, so rain covers clouds.
+        return await self._composite("$".join(entries), timestep["id"])
 
     async def _radar_layers(self, timestep: dict[str, Any]) -> list[bytes]:
         layers = await asyncio.gather(
@@ -355,7 +373,7 @@ async def async_setup_entry(
     entry: WetterOnlineConfigEntry,
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
-    """Set up rain and cloud radar cameras."""
+    """Set up weather, rain, and cloud radar cameras."""
     coordinator = entry.runtime_data
     location = coordinator.data.location
     session = async_get_clientsession(hass)
@@ -363,7 +381,7 @@ async def async_setup_entry(
         WetterOnlineRadarCamera(coordinator, renderer, period)
         for renderer in (
             RadarRenderer(session, location.latitude, location.longitude, layer)
-            for layer in (RAIN, CLOUDS)
+            for layer in (WEATHER, RAIN, CLOUDS)
         )
         for period in (None, CURRENT, TODAY, TOMORROW)
     )

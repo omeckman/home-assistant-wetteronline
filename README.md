@@ -25,9 +25,9 @@ Unofficial Home Assistant integration for the freely accessible location pages o
   smog, and WetterOnline weather symbols
 - Additional data for pollen, warnings, sunrise and sunset, moon information,
   forecast text, editorial content, and nearby water stations when available
-- Location-centred WetterOnline rain and cloud radar cameras, each as a current image,
-  a current animation, and hourly forecast animations for today (next 24 hours) and
-  tomorrow
+- Location-centred WetterOnline weather radar (clouds and precipitation), rain radar,
+  and cloud radar cameras, each as a current image, a current animation, and hourly
+  forecast animations for today (next 24 hours) and tomorrow
 - Diagnostics and migration from the original 1.x config-entry format
 - Updates every 15 minutes
 
@@ -110,8 +110,9 @@ information you do not want to share before uploading it publicly.
 ## Data source and attribution
 
 All weather data is provided by WetterOnline. The rain radar uses WetterOnline
-precipitation layers over map data from © OpenStreetMap contributors; the cloud radar
-uses WetterOnline satellite layers over the WetterOnline radar map. This project is
+precipitation layers over map data from © OpenStreetMap contributors; the weather and
+cloud radars use WetterOnline satellite and precipitation layers over the WetterOnline
+radar map. This project is
 not affiliated with or endorsed by WetterOnline.
 
 ## Development

@@ -32,9 +32,17 @@ async def test_setup_creates_weather_sensors_warning_and_radar(hass: HomeAssista
 
     assert hass.states.get("weather.berlin") is not None
     assert hass.states.get("binary_sensor.berlin_weather_warning") is not None
-    for radar in ("weather_radar", "cloud_radar"):
+    for radar in ("weather_radar", "rain_radar", "cloud_radar"):
         for suffix in ("", "_animation", "_today", "_tomorrow"):
             assert hass.states.get(f"camera.berlin_{radar}{suffix}") is not None
+    # The weather radar keeps the unique ids of the former rain-only cameras.
+    entity_registry = er.async_get(hass)
+    for unique_id, entity_id in (
+        ("10382_radar_current", "camera.berlin_weather_radar"),
+        ("10382_radar_animation", "camera.berlin_weather_radar_animation"),
+        ("10382_rain_current", "camera.berlin_rain_radar"),
+    ):
+        assert entity_registry.async_get_entity_id("camera", DOMAIN, unique_id) == entity_id
     assert hass.states.get("sensor.berlin_temperature").state == "20.0"
 
 

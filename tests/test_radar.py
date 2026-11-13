@@ -15,6 +15,7 @@ from custom_components.wetteronline.camera import (
     CURRENT,
     TODAY,
     TOMORROW,
+    WEATHER,
     RadarRenderer,
     _world,
 )
@@ -119,6 +120,20 @@ async def test_radar_tiles_select_matching_quadrant() -> None:
         f"area/gl/2026/11/13/05/30/v2/ZL7/522/border/{tile}.png"
         for tile, qx, qy in (("68_40", 0, 1), ("68_40", 1, 1), ("68_42", 0, 0), ("68_42", 1, 0))
     )
+
+
+async def test_weather_radar_draws_rain_over_clouds() -> None:
+    step = _timestep("20261113-0530-1", "clouds")
+    step["layers"]["europe"]["rain"] = step["layers"]["europe"]["clouds"]
+    step["layers"]["global"]["rain"] = step["layers"]["global"]["clouds"]
+    async with ClientSession() as session:
+        renderer = RadarRenderer(session, 52.517, 13.4, WEATHER)
+        renderer._fetch = AsyncMock(return_value=b"tile")  # type: ignore[method-assign]
+        await renderer._radar_layer(step, 136, 82)
+
+    clouds, rain = _descriptor(renderer._fetch.await_args.args[0]).split("$")
+    assert clouds.startswith("c|2;;0;1;false|area/eu/2026/11/13/05/30/v1/ZL7/522/68_40.png;")
+    assert rain.startswith("r|2;;0;1;false|area/eu/2026/11/13/05/30/v1/ZL7/522/sprite/68_40.png;")
 
 
 async def test_cloud_radar_uses_cloud_tiles_and_wetteronline_map() -> None:
