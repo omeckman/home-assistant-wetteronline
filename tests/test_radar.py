@@ -3,7 +3,7 @@
 import base64
 from datetime import UTC, date, datetime, timedelta
 from io import BytesIO
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -23,9 +23,12 @@ from custom_components.wetteronline.camera import (
     TOMORROW,
     WEATHER,
     ZOOM_LEVELS,
+    MapView,
     RadarRenderer,
+    TileCache,
     Timeline,
     _label,
+    _map_section,
     _step_time,
     _world,
     max_pan,
@@ -49,15 +52,15 @@ def test_view_stays_inside_fetched_blocks() -> None:
             assert view.origins[0] == (view.left, view.top)
             assert all(x % 2 == 0 and y % 2 == 0 for x, y in view.origins)
     with pytest.raises(ValueError):
-        renderer.view(6)
+        renderer.view(5)
 
 
 def test_moved_views_cover_exactly_the_overview() -> None:
-    """Half-view steps reach the edges of the zoom-7 overview but not beyond."""
+    """Half-view steps reach the edges of the zoom-6 view but not beyond."""
     renderer = RadarRenderer(None, 48.14, 11.58)  # type: ignore[arg-type]
-    overview = renderer.view(7)
-    overview_left = overview.origin[0] / 2**7
-    overview_right = (overview.origin[0] + 768) / 2**7
+    overview = renderer.view(6)
+    overview_left = overview.origin[0] / 2**6
+    overview_right = (overview.origin[0] + 768) / 2**6
     for zoom in ZOOM_LEVELS:
         limit = max_pan(zoom)
         for pan_x in range(-limit, limit + 1):
@@ -76,9 +79,9 @@ def test_moved_views_cover_exactly_the_overview() -> None:
         assert (renderer.view(zoom, limit, 0).origin[0] + 768) / scale == pytest.approx(
             overview_right, abs=2 / scale
         )
-    assert (max_pan(7), max_pan(8), max_pan(9)) == (0, 1, 3)
+    assert (max_pan(6), max_pan(7), max_pan(8), max_pan(9)) == (0, 1, 3, 7)
     with pytest.raises(ValueError):
-        renderer.view(8, 2, 0)
+        renderer.view(8, 4, 0)
 
 
 def test_card_views_snap_to_half_tiles() -> None:
@@ -97,6 +100,18 @@ def _base_map() -> tuple[bytes, None]:
     out = BytesIO()
     Image.new("RGBA", (1024, 1024), "#dce7ed").save(out, "PNG")
     return out.getvalue(), None
+
+
+def _tile(color: str) -> bytes:
+    out = BytesIO()
+    Image.new("RGBA", (512, 512), color).save(out, "PNG")
+    return out.getvalue()
+
+
+def _section(view: MapView) -> tuple[Image.Image, Image.Image | None]:
+    out = BytesIO()
+    Image.new("RGBA", (view.columns * 512, view.rows * 512), "#dce7ed").save(out, "PNG")
+    return _map_section((out.getvalue(), None), view)
 
 
 def _timestep(step_id: str, layer: str = "rain") -> dict:
@@ -222,6 +237,75 @@ async def test_card_frames_have_no_footer_and_are_cached() -> None:
         sum(abs(a - b) for a, b in zip(image.getpixel((700, 760)), (220, 231, 237), strict=True))
         < 12
     )
+
+
+def test_radar_blocks_are_drawn_at_their_place_in_the_section() -> None:
+    renderer = RadarRenderer(None, 52.517, 13.4)  # type: ignore[arg-type]
+    view = renderer.view(8)
+    left, top = view.crop[:2]
+    layers = [_tile("#ff0000"), *[b""] * (len(view.origins) - 1)]
+
+    frame = renderer._compose_frame(_section(view), layers, "id", view, footer=False, marker=False)
+
+    # The first block ends 512 px into the canvas of the blocks.
+    assert frame.getpixel((511 - left, 511 - top)) == (255, 0, 0, 255)
+    assert frame.getpixel((512 - left, 511 - top)) != (255, 0, 0, 255)
+    assert frame.getpixel((511 - left, 512 - top)) != (255, 0, 0, 255)
+
+
+async def test_germany_view_scales_down_zoom_7_radar_tiles() -> None:
+    """Zoom 6 shows all of Germany, with the zoom-7 radar tiles inside the section."""
+    async with ClientSession() as session:
+        renderer = RadarRenderer(session, 52.517, 13.4)
+        renderer._fetch = AsyncMock(return_value=_tile("#ff0000"))  # type: ignore[method-assign]
+        # The center of the card's Germany view.
+        view = renderer.view(6, center=(51.16, 10.45), snap=True)
+        layers = await renderer._radar_layers(_timestep("20261113-0530-1"), view)
+
+    for latitude, longitude in ((55.06, 8.42), (47.27, 10.18), (51.05, 5.87), (51.27, 15.04)):
+        x, y = _world(latitude, longitude, 6)
+        assert 0 < x * 256 - view.origin[0] < 768
+        assert 0 < y * 256 - view.origin[1] < 768
+    blocks = view.radar_blocks
+    descriptors = [_descriptor(call.args[0]) for call in renderer._fetch.await_args_list]
+    assert {(block.zoom, block.size) for block in blocks} == {(7, 256)}
+    # Of the 4x4 zoom-7 blocks below the map blocks, the bottom row is outside the section.
+    assert len(blocks) == len(descriptors) == 12
+    assert descriptors[0].startswith(
+        f"r|1;;0;0;false|area/eu/2026/11/13/05/30/v1/ZL7/522/sprite/{blocks[0].x}_{blocks[0].y}"
+    )
+    frame = renderer._compose_frame(_section(view), layers, "id", view, footer=False, marker=False)
+    assert frame.size == (768, 768)
+    assert frame.convert("RGB").getextrema() == ((255, 255), (0, 0), (0, 0))
+
+
+async def test_downloads_are_kept_until_they_expire() -> None:
+    session = MagicMock()
+    response = session.get.return_value.__aenter__.return_value
+    response.raise_for_status = MagicMock()
+    response.read = AsyncMock(return_value=b'{"timesteps": []}')
+    renderer = RadarRenderer(session, 52.517, 13.4)
+
+    assert await renderer._metadata("periodCurrentLowRes") == {"timesteps": []}
+    assert await renderer._metadata("periodCurrentLowRes") == {"timesteps": []}
+    await renderer._fetch("https://tiles.example/1", timedelta(0))
+    await renderer._fetch("https://tiles.example/1", timedelta(0))
+
+    urls = [call.args[0] for call in session.get.call_args_list]
+    assert len(urls) == 3
+    assert "period=periodCurrentLowRes" in urls[0]
+    assert urls[1:] == ["https://tiles.example/1", "https://tiles.example/1"]
+
+
+def test_tile_cache_keeps_recently_used_downloads_within_its_budget() -> None:
+    cache = TileCache(max_bytes=10)
+    cache.put("a", b"aaaa", timedelta(minutes=5))
+    cache.put("b", b"bbbb", timedelta(minutes=5))
+    assert cache.get("a") == b"aaaa"
+    cache.put("c", b"cccc", timedelta(minutes=5))
+
+    assert cache.get("b") is None
+    assert (cache.get("a"), cache.get("c")) == (b"aaaa", b"cccc")
 
 
 async def test_weather_radar_draws_rain_over_clouds() -> None:
