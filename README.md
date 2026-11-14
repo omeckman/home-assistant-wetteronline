@@ -101,10 +101,11 @@ or HACS frontend repository is needed.
 - Switch between now, today, tomorrow, and the next three days
 - Switch between weather radar (clouds and precipitation), rain radar, and cloud radar
 - Play, pause, step frame by frame, drag the slider, or swipe over the map
-- Zoom in three steps (overview, ×2, ×4) and move the zoomed map with the arrows at its
-  edges, within the area of the overview
+- Zoom in four steps (about the size of Germany, overview, ×2, ×4) and move the zoomed map
+  with the arrows at its edges, within the area of the widest step
 - Center the map on the WetterOnline location, on your phone's position, or on your own
-  places
+  places, or show all of Germany
+- Views one move or zoom step away are prepared in the background, so they open quickly
 
 Add it with **Add card → WetterOnline Radar**, or in YAML:
 
@@ -122,8 +123,8 @@ once it moved an eighth of the map away. Optional settings:
 | `title` | none | Card title |
 | `layer` | from the entity | Map when opened: `weather`, `rain`, or `clouds` |
 | `period` | from the entity | `animation` (now), `today`, `tomorrow`, `in_2_days`, `in_3_days`, or `in_4_days` |
-| `zoom` | `8` | Zoom level when opened: `7` (overview), `8`, or `9` |
-| `center` | `location` | Center when opened: `location`, `tracker`, or the name of a place |
+| `zoom` | `8`; `6` with `center: germany` | Zoom level when opened: `6` (about the size of Germany), `7` (overview), `8` (×2), or `9` (×4) |
+| `center` | `location` | Center when opened: `location`, `tracker`, `germany`, or the name of a place |
 | `tracker` | own person | Person or device tracker for "My location"; by default the person of the user looking at the card |
 | `places` | none | Own centers, each with `name`, `latitude`, and `longitude` |
 | `frame_duration` | `1000` | Milliseconds per frame while playing |

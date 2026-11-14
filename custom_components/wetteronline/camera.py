@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import math
 from collections import defaultdict
 from collections.abc import Awaitable, Callable
@@ -39,13 +40,19 @@ HEADERS = {
 ANIMATION_LOOP_MS = 9000
 MAX_FRAME_MS = 650
 MAX_PARALLEL_TILES = 8
-# Map zoom levels for the radar card; radar data has native zoom-7 tiles. At higher
-# levels the card can move the view in half-view steps within the zoom-7 view.
-ZOOM_LEVELS = (7, 8, 9)
+# Map zoom levels for the radar card; zoom 6 fits all of Germany. Radar tiles start at
+# zoom 7, so zoom 6 scales them down. At higher levels the card can move the view in
+# half-view steps within the zoom-6 view.
+ZOOM_LEVELS = (6, 7, 8, 9)
+RADAR_ZOOM = 7
 DEFAULT_ZOOM = 8
 # Rendered card frame sets and base maps kept in memory per renderer.
 MAX_CACHED_RESULTS = 24
 MAX_CACHED_BASE_MAPS = 12
+# Downloads shared by all locations, so moved and neighboring views reuse their tiles.
+MAX_CACHED_TILE_BYTES = 48 * 1024 * 1024
+MAP_TILE_MAX_AGE = timedelta(days=1)
+METADATA_MAX_AGE = timedelta(minutes=1)
 # Part of the GIF web palette, so the timeline is not dithered.
 ACCENT = "#0099cc"
 WEEKDAYS = {
@@ -131,6 +138,7 @@ LAYERS = (WEATHER, RAIN, CLOUDS)
 ANIMATION_PERIODS = (CURRENT, TODAY, TOMORROW, IN_2_DAYS, IN_3_DAYS, IN_4_DAYS)
 # Renderers of every location by config entry id and layer key, used by the radar card.
 RADAR_RENDERERS: HassKey[dict[str, dict[str, RadarRenderer]]] = HassKey(f"{DOMAIN}_radar_renderers")
+TILE_CACHE: HassKey[TileCache] = HassKey(f"{DOMAIN}_tile_cache")
 # Observed radar periods for today's hours before now, smallest download first.
 PAST_PERIODS = ((6, "periodLast6h"), (12, "periodLast12h"), (24, "periodLast24h"))
 
@@ -148,6 +156,18 @@ def _world(latitude: float, longitude: float, zoom: int = 8) -> tuple[float, flo
 def max_pan(zoom: int) -> int:
     """Return how many half-view steps the view can move from its center."""
     return 2 ** (zoom - ZOOM_LEVELS[0]) - 1
+
+
+@dataclass(frozen=True, slots=True)
+class RadarBlock:
+    """A 2x2 radar tile block to fetch and the square it covers on the map canvas."""
+
+    zoom: int
+    x: int
+    y: int
+    left: int
+    top: int
+    size: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -211,6 +231,35 @@ class MapView:
             (self.left + 2 * column, self.top + 2 * row)
             for row in range(self.rows)
             for column in range(self.columns)
+        ]
+
+    @property
+    def radar_blocks(self) -> list[RadarBlock]:
+        """Return the radar blocks of the map blocks; below zoom 7, zoom-7 ones to scale down."""
+        if self.zoom >= RADAR_ZOOM:
+            return [
+                RadarBlock(self.zoom, x, y, (x - self.left) * 256, (y - self.top) * 256, 512)
+                for x, y in self.origins
+            ]
+        # Only the zoom-7 blocks inside the section are fetched, as there are many more.
+        scale = 2 ** (RADAR_ZOOM - self.zoom)
+        size = 512 // scale
+        left, top, right, bottom = self.crop
+        return [
+            RadarBlock(
+                RADAR_ZOOM,
+                self.left * scale + 2 * column,
+                self.top * scale + 2 * row,
+                column * size,
+                row * size,
+                size,
+            )
+            for row in range(self.rows * scale)
+            for column in range(self.columns * scale)
+            if left < (column + 1) * size
+            and column * size < right
+            and top < (row + 1) * size
+            and row * size < bottom
         ]
 
 
@@ -317,6 +366,47 @@ def _encode_webp(frame: Image.Image) -> bytes:
     return out.getvalue()
 
 
+def _map_section(
+    base: tuple[bytes, bytes | None], view: MapView
+) -> tuple[Image.Image, Image.Image | None]:
+    """Decode the base map once for all frames and crop it to the section."""
+    background, overlay = base
+    return (
+        Image.open(BytesIO(background)).convert("RGBA").crop(view.crop),
+        Image.open(BytesIO(overlay)).convert("RGBA").crop(view.crop) if overlay else None,
+    )
+
+
+class TileCache:
+    """Downloads by URL, each kept until its maximum age within a memory budget."""
+
+    def __init__(self, max_bytes: int = MAX_CACHED_TILE_BYTES) -> None:
+        self._entries: dict[str, tuple[datetime, bytes]] = {}
+        self._max_bytes = max_bytes
+        self._size = 0
+
+    def get(self, url: str) -> bytes | None:
+        """Return a download that has not expired yet."""
+        entry = self._entries.pop(url, None)
+        if entry is None:
+            return None
+        if entry[0] <= datetime.now(UTC):
+            self._size -= len(entry[1])
+            return None
+        # Keep the most recently used downloads.
+        self._entries[url] = entry
+        return entry[1]
+
+    def put(self, url: str, data: bytes, max_age: timedelta) -> None:
+        """Keep a download and drop the least recently used ones beyond the budget."""
+        if (old := self._entries.pop(url, None)) is not None:
+            self._size -= len(old[1])
+        self._entries[url] = (datetime.now(UTC) + max_age, data)
+        self._size += len(data)
+        while self._size > self._max_bytes:
+            self._size -= len(self._entries.pop(next(iter(self._entries)))[1])
+
+
 class RadarRenderer:
     """Fetch public radar layers and render them around a location."""
 
@@ -328,6 +418,7 @@ class RadarRenderer:
         layer: RadarLayer = RAIN,
         language: str = "en",
         footer_at_top: bool = False,
+        tiles: TileCache | None = None,
     ) -> None:
         self.session = session
         self.latitude = latitude
@@ -339,6 +430,7 @@ class RadarRenderer:
         self._cache: dict[str, tuple[datetime, Any]] = {}
         self._locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         self._tile_limit = asyncio.Semaphore(MAX_PARALLEL_TILES)
+        self._tiles = TileCache() if tiles is None else tiles
 
     def view(
         self,
@@ -356,26 +448,30 @@ class RadarRenderer:
         latitude, longitude = center or (self.latitude, self.longitude)
         return MapView.around(latitude, longitude, zoom, pan_x, pan_y, snap)
 
-    async def _get_json(self, params: dict[str, str]) -> dict[str, Any]:
-        async with self.session.get(METADATA_URL, params=params, headers=HEADERS) as response:
-            response.raise_for_status()
-            return await response.json()
+    async def _get_json(self, params: dict[str, str], max_age: timedelta) -> dict[str, Any]:
+        return json.loads(await self._fetch(f"{METADATA_URL}?{urlencode(params)}", max_age))
 
     async def _metadata(self, period: str) -> dict[str, Any]:
         return await self._get_json(
-            {"lg": "wr", "newMetadata": "true", "period": period, "type": "period"}
+            {"lg": "wr", "newMetadata": "true", "period": period, "type": "period"},
+            METADATA_MAX_AGE,
         )
 
-    async def _fetch(self, url: str) -> bytes:
-        async with self._tile_limit, self.session.get(url, headers=HEADERS) as response:
-            response.raise_for_status()
-            return await response.read()
+    async def _fetch(self, url: str, max_age: timedelta) -> bytes:
+        if (data := self._tiles.get(url)) is None:
+            async with self._tile_limit, self.session.get(url, headers=HEADERS) as response:
+                response.raise_for_status()
+                data = await response.read()
+            self._tiles.put(url, data, max_age)
+        return data
 
     async def _composite(self, descriptor: str, time: str | None = None) -> bytes:
         params = {"k": "0", "lg": "wr", "tiles": base64.b64encode(descriptor.encode()).decode()}
         if time:
             params |= {"format": "webp", "time": time}
-        return await self._fetch(f"{COMPOSITE_URL}?{urlencode(params)}")
+        # Radar tiles change with the radar; map tiles hardly ever.
+        max_age = RADAR_INTERVAL if time else MAP_TILE_MAX_AGE
+        return await self._fetch(f"{COMPOSITE_URL}?{urlencode(params)}", max_age)
 
     async def _base_map(self, view: MapView) -> tuple[bytes, bytes | None]:
         """Return the cached background and the optional overlay drawn above the radar."""
@@ -398,11 +494,11 @@ class RadarRenderer:
             for dy in range(2 * view.rows)
             for dx in range(2 * view.columns)
         ]
-        tiles = await asyncio.gather(*(self._fetch(url) for url in urls))
+        tiles = await asyncio.gather(*(self._fetch(url, MAP_TILE_MAX_AGE) for url in urls))
         return await asyncio.to_thread(self._compose_tiles, tiles, 256, 2 * view.columns)
 
     async def _wetteronline_map(self, view: MapView) -> tuple[bytes, bytes]:
-        geo = await self._get_json({"type": "geo"})
+        geo = await self._get_json({"type": "geo"}, MAP_TILE_MAX_AGE)
         static = geo["staticLayer"]
         zoom = view.zoom
 
@@ -466,7 +562,10 @@ class RadarRenderer:
 
     async def _radar_layers(self, timestep: dict[str, Any], view: MapView) -> list[bytes]:
         layers = await asyncio.gather(
-            *(self._radar_layer(timestep, x, y, view.zoom) for x, y in view.origins),
+            *(
+                self._radar_layer(timestep, block.x, block.y, block.zoom)
+                for block in view.radar_blocks
+            ),
             return_exceptions=True,
         )
         tiles = [layer if isinstance(layer, bytes) else b"" for layer in layers]
@@ -476,7 +575,7 @@ class RadarRenderer:
 
     def _compose_frame(
         self,
-        base: tuple[bytes, bytes | None],
+        section: tuple[Image.Image, Image.Image | None],
         radar_layers: list[bytes],
         step_id: str,
         view: MapView,
@@ -484,23 +583,26 @@ class RadarRenderer:
         footer: bool = True,
         marker: bool = True,
     ) -> Image.Image:
-        background, overlay = base
-        image = Image.open(BytesIO(background)).convert("RGBA")
-        for (x, y), radar in zip(view.origins, radar_layers, strict=True):
+        background, overlay = section
+        image = background.copy()
+        crop_left, crop_top = view.crop[:2]
+        for block, radar in zip(view.radar_blocks, radar_layers, strict=True):
             if radar:
-                layer = Image.open(BytesIO(radar)).convert("RGBA").resize((512, 512))
-                image.alpha_composite(layer, ((x - view.left) * 256, (y - view.top) * 256))
+                layer = Image.open(BytesIO(radar)).convert("RGBA")
+                layer = layer.resize((block.size, block.size))
+                # Draw only the part of the block inside the section.
+                x, y = block.left - crop_left, block.top - crop_top
+                image.alpha_composite(layer, (max(x, 0), max(y, 0)), (max(-x, 0), max(-y, 0)))
         if overlay:
-            image.alpha_composite(Image.open(BytesIO(overlay)).convert("RGBA"))
+            image.alpha_composite(overlay)
         if marker:
-            px, py = view.marker
+            px, py = view.marker[0] - crop_left, view.marker[1] - crop_top
             ImageDraw.Draw(image).ellipse(
                 (px - 10, py - 10, px + 10, py + 10),
                 fill="#00a7d1",
                 outline="white",
                 width=3,
             )
-        image = image.crop(view.crop)
         if footer:
             self._draw_footer(image, step_id, timeline)
         return image
@@ -677,11 +779,12 @@ class RadarRenderer:
             timeline = Timeline.for_day(now.date() + timedelta(days=period.day_offset), now)
         elif period and times:
             timeline = Timeline.for_frames(times, now)
+        section = await asyncio.to_thread(_map_section, base, view)
         frames = [
             (
                 step_id,
                 await asyncio.to_thread(
-                    self._compose_frame, base, layer, step_id, view, timeline, footer, marker
+                    self._compose_frame, section, layer, step_id, view, timeline, footer, marker
                 ),
             )
             for step_id, layer in available
@@ -726,6 +829,7 @@ async def async_setup_entry(
     location = coordinator.data.location
     session = async_get_clientsession(hass)
     footer_at_top = entry.options.get(CONF_TIMELINE_POSITION) == TIMELINE_TOP
+    tiles = hass.data.setdefault(TILE_CACHE, TileCache())
     renderers = {
         layer.key: RadarRenderer(
             session,
@@ -734,6 +838,7 @@ async def async_setup_entry(
             layer,
             hass.config.language,
             footer_at_top,
+            tiles,
         )
         for layer in LAYERS
     }
@@ -741,7 +846,10 @@ async def async_setup_entry(
 
     @callback
     def _remove_renderers() -> None:
-        hass.data[RADAR_RENDERERS].pop(entry.entry_id, None)
+        all_renderers = hass.data[RADAR_RENDERERS]
+        all_renderers.pop(entry.entry_id, None)
+        if not all_renderers:
+            hass.data.pop(TILE_CACHE, None)
 
     entry.async_on_unload(_remove_renderers)
     async_add_entities(

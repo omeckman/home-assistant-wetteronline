@@ -58,7 +58,7 @@ async def test_frames_default_to_the_cameras_layer_and_period(
         "?layer=rain&period=tomorrow&zoom=8&pan_x=0&pan_y=0",
     }
     assert data["location"] == {"name": "Berlin", "latitude": 52.517, "longitude": 13.4}
-    assert (data["pan_x"], data["pan_y"], data["max_pan"]) == (0, 0, 1)
+    assert (data["pan_x"], data["pan_y"], data["max_pan"]) == (0, 0, 3)
     assert data["view"] == {
         "zoom": 8,
         "x": FRAMES.view.origin[0],
@@ -96,7 +96,7 @@ async def test_frames_follow_the_selected_layer_period_and_zoom(
 
     assert response.status == 200
     assert (data["layer"], data["period"], data["zoom"]) == ("clouds", "in_3_days", 9)
-    assert (data["pan_x"], data["pan_y"], data["max_pan"]) == (-3, 2, 3)
+    assert (data["pan_x"], data["pan_y"], data["max_pan"]) == (-3, 2, 7)
     assert data["credits"] == "WetterOnline"
     assert data["frames"][0]["url"].endswith(
         "?layer=clouds&period=in_3_days&zoom=9&pan_x=-3&pan_y=2&lat=48.13743&lon=11.57549"
@@ -119,7 +119,7 @@ async def test_invalid_requests_are_rejected(
         bad_lat = await client.get("/api/wetteronline/radar/weather.berlin?lat=95&lon=10")
         bad_number = await client.get("/api/wetteronline/radar/weather.berlin?pan_x=left")
     # The renderer rejects moving beyond the overview before it fetches anything.
-    too_far = await client.get("/api/wetteronline/radar/weather.berlin?zoom=8&pan_x=2")
+    too_far = await client.get("/api/wetteronline/radar/weather.berlin?zoom=8&pan_x=4")
     with patch.object(RadarRenderer, "frames", AsyncMock(return_value=None)):
         unavailable = await client.get("/api/wetteronline/radar/weather.berlin")
     anonymous = await (await hass_client_no_auth()).get("/api/wetteronline/radar/weather.berlin")

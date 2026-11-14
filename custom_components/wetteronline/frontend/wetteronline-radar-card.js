@@ -3,8 +3,15 @@
 
 const API_URL = "/api/wetteronline/radar";
 const REFRESH_MS = 10 * 60 * 1000;
+// Views opened before are kept for a while, so going back to them needs no download.
+const CACHE_MS = 5 * 60 * 1000;
+const CACHED_VIEWS = 6;
 const SWIPE_STEP_PX = 24;
 const TRACKER_RELOAD_MS = 3000;
+const DEFAULT_ZOOM = 8;
+// At zoom 6, a view around the middle of Germany shows all of it.
+const GERMANY = { latitude: 51.16, longitude: 10.45, zoom: 6 };
+const SELECTION_KEYS = ["layer", "period", "zoom", "pan_x", "pan_y"];
 
 const TEXT = {
   de: {
@@ -21,6 +28,7 @@ const TEXT = {
     zoomIn: "Näher",
     zoomOut: "Weiter weg",
     myLocation: "Mein Standort",
+    germany: "Deutschland",
     recenter: "Zur Mitte",
     move: { left: "Nach links", right: "Nach rechts", up: "Nach oben", down: "Nach unten" },
     editor: {
@@ -49,6 +57,7 @@ const TEXT = {
     zoomIn: "Zoom in",
     zoomOut: "Zoom out",
     myLocation: "My location",
+    germany: "Germany",
     recenter: "Back to center",
     move: { left: "Move left", right: "Move right", up: "Move up", down: "Move down" },
     editor: {
@@ -117,6 +126,17 @@ const STYLE = `
   .move-up { top: 6px; left: 50%; transform: translateX(-50%); }
   .move-down { bottom: 6px; left: 50%; transform: translateX(-50%); }
   .recenter { left: 6px; bottom: 6px; }
+  .spinner {
+    position: absolute; top: 6px; right: 6px; width: 36px; height: 36px; border-radius: 6px;
+    background: rgba(0, 0, 0, 0.45); display: flex; align-items: center; justify-content: center;
+    pointer-events: none;
+  }
+  .spinner::after {
+    content: ""; width: 16px; height: 16px; border-radius: 50%;
+    border: 3px solid rgba(255, 255, 255, 0.3); border-top-color: #fff;
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
   .status {
     position: absolute; inset: 0; display: flex; flex-direction: column; gap: 8px;
     align-items: center; justify-content: center; color: var(--primary-text-color); text-align: center;
@@ -157,11 +177,20 @@ class WetterOnlineRadarCard extends HTMLElement {
           name: "period",
           selector: { select: { mode: "dropdown", options: options(Object.keys(DAY_OFFSETS), { ...text.periods, in_2_days: "+2", in_3_days: "+3", in_4_days: "+4" }) } },
         },
-        { name: "zoom", selector: { number: { min: 7, max: 9, mode: "slider" } } },
+        { name: "zoom", selector: { number: { min: 6, max: 9, mode: "slider" } } },
         { name: "tracker", selector: { entity: { filter: [{ domain: "person" }, { domain: "device_tracker" }] } } },
         {
           name: "center",
-          selector: { select: { mode: "dropdown", options: [{ value: "location", label: "WetterOnline" }, { value: "tracker", label: text.myLocation }] } },
+          selector: {
+            select: {
+              mode: "dropdown",
+              options: [
+                { value: "location", label: "WetterOnline" },
+                { value: "tracker", label: text.myLocation },
+                { value: "germany", label: text.germany },
+              ],
+            },
+          },
         },
         { name: "frame_duration", selector: { number: { min: 200, max: 5000, step: 100, unit_of_measurement: "ms" } } },
         { name: "autoplay", selector: { boolean: {} } },
@@ -178,12 +207,16 @@ class WetterOnlineRadarCard extends HTMLElement {
     this._config.places = (Array.isArray(config.places) ? config.places : [])
       .map((place) => ({ ...place, latitude: Number(place.latitude), longitude: Number(place.longitude) }))
       .filter((place) => Number.isFinite(place.latitude) && Number.isFinite(place.longitude));
-    this._selection = { layer: config.layer, period: config.period, zoom: config.zoom, pan_x: 0, pan_y: 0 };
     const placeIndex = this._config.places.findIndex((place) => place.name === config.center);
-    this._center = placeIndex >= 0 ? `place:${placeIndex}` : config.center === "tracker" ? "tracker" : "location";
+    this._center =
+      placeIndex >= 0 ? `place:${placeIndex}` : ["tracker", "germany"].includes(config.center) ? config.center : "location";
+    // Without a zoom, the card opens a step closer than the overview, or with all of Germany.
+    const zoom = config.zoom ?? (this._center === "germany" ? GERMANY.zoom : DEFAULT_ZOOM);
+    this._selection = { layer: config.layer, period: config.period, zoom, pan_x: 0, pan_y: 0 };
     this._playing = this._config.autoplay;
     (this._frames || []).forEach((frame) => URL.revokeObjectURL(frame.url));
     this._frames = [];
+    this._views = new Map();
     this._data = undefined;
     this._index = 0;
     if (this.shadowRoot) {
@@ -209,13 +242,13 @@ class WetterOnlineRadarCard extends HTMLElement {
       this._renderMarkers();
       if (this._center === "tracker" && this._trackerLeftCenter()) {
         clearTimeout(this._trackerTimer);
-        this._trackerTimer = setTimeout(() => this._load(), TRACKER_RELOAD_MS);
+        this._trackerTimer = setTimeout(() => this._load({ prefetch: false }), TRACKER_RELOAD_MS);
       }
     }
   }
 
   connectedCallback() {
-    this._refreshTimer = setInterval(() => this._load(), REFRESH_MS);
+    this._refreshTimer = setInterval(() => this._load({ refresh: true, prefetch: false }), REFRESH_MS);
     this._syncPlayback();
   }
 
@@ -257,6 +290,7 @@ class WetterOnlineRadarCard extends HTMLElement {
           <button class="map-button move-down" title="${text.move.down}" hidden><ha-icon icon="mdi:chevron-down"></ha-icon></button>
           <button class="map-button recenter" title="${text.recenter}" hidden><ha-icon icon="mdi:crosshairs"></ha-icon></button>
           <div class="status" hidden></div>
+          <div class="spinner" hidden></div>
         </div>
         <div class="controls">
           <button class="icon-button previous" title="${text.previous}"><ha-icon icon="mdi:skip-previous"></ha-icon></button>
@@ -322,35 +356,19 @@ class WetterOnlineRadarCard extends HTMLElement {
     viewport.addEventListener("pointerleave", end);
   }
 
-  async _load() {
+  async _load({ refresh = false, prefetch = true } = {}) {
     if (!this._hass || !this._config) return;
     const token = (this._loadToken = (this._loadToken || 0) + 1);
     const keepId = this._frames[this._index]?.id;
-    this._setStatus("loading");
+    const center = this._centerPoint();
+    const url = this._viewUrl(this._selection, center);
+    const cached = refresh ? undefined : this._cachedView(url);
+    if (!cached) this._setStatus("loading");
     try {
-      const params = new URLSearchParams();
-      for (const [key, value] of Object.entries(this._selection)) {
-        if (value !== undefined && value !== null && value !== "") params.set(key, value);
-      }
-      const center = this._centerPoint();
-      if (center) {
-        params.set("lat", center.latitude.toFixed(5));
-        params.set("lon", center.longitude.toFixed(5));
-      }
-
-      const response = await this._hass.fetchWithAuth(
-        `${API_URL}/${encodeURIComponent(this._config.entity)}?${params}`
-      );
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const data = await response.json();
-      const blobs = await Promise.all(
-        data.frames.map(async (frame) => {
-          const frameResponse = await this._hass.fetchWithAuth(frame.url);
-          if (!frameResponse.ok) throw new Error(`HTTP ${frameResponse.status}`);
-          return frameResponse.blob();
-        })
-      );
+      const view = cached || (await this._fetchView(url));
       if (token !== this._loadToken) return;
+      if (!cached) this._cacheView(view, center);
+      const { data, blobs } = view;
       const frames = data.frames.map((frame, index) => ({
         id: frame.id,
         time: frame.time ? new Date(frame.time) : null,
@@ -371,7 +389,8 @@ class WetterOnlineRadarCard extends HTMLElement {
       const previous = this._frames;
       const samePeriod = this._data && this._data.period === data.period;
       this._frames = frames;
-      this._data = { ...data, now: new Date(data.now) };
+      // Now has moved on since a cached view was loaded.
+      this._data = { ...data, now: new Date(Date.parse(data.now) + Date.now() - view.time) };
       this._selection = { layer: data.layer, period: data.period, zoom: data.zoom, pan_x: data.pan_x, pan_y: data.pan_y };
       this._trackerKey = JSON.stringify(this._trackerPoint());
       const kept = samePeriod ? frames.findIndex((frame) => frame.id === keepId) : -1;
@@ -384,9 +403,72 @@ class WetterOnlineRadarCard extends HTMLElement {
       this._renderTimeline();
       this._show(this._index);
       this._syncPlayback();
+      if (prefetch) this._prefetch(token, center);
     } catch (err) {
       if (token === this._loadToken) this._setStatus("error", err);
     }
+  }
+
+  _viewUrl(selection, center) {
+    const params = new URLSearchParams();
+    for (const key of SELECTION_KEYS) {
+      const value = selection[key];
+      if (value !== undefined && value !== null && value !== "") params.set(key, value);
+    }
+    if (center) {
+      params.set("lat", center.latitude.toFixed(5));
+      params.set("lon", center.longitude.toFixed(5));
+    }
+    return `${API_URL}/${encodeURIComponent(this._config.entity)}?${params}`;
+  }
+
+  async _fetchView(url) {
+    const response = await this._hass.fetchWithAuth(url);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data = await response.json();
+    const blobs = await Promise.all(
+      data.frames.map(async (frame) => {
+        const frameResponse = await this._hass.fetchWithAuth(frame.url);
+        if (!frameResponse.ok) throw new Error(`HTTP ${frameResponse.status}`);
+        return frameResponse.blob();
+      })
+    );
+    return { time: Date.now(), data, blobs };
+  }
+
+  _cachedView(url) {
+    const view = this._views.get(url);
+    this._views.delete(url);
+    if (!view || Date.now() - view.time >= CACHE_MS) return undefined;
+    // Keep the most recently opened views.
+    this._views.set(url, view);
+    return view;
+  }
+
+  _cacheView(view, center) {
+    // The returned selection also names the layer and period of the card's entity.
+    this._views.set(this._viewUrl(view.data, center), view);
+    while (this._views.size > CACHED_VIEWS) this._views.delete(this._views.keys().next().value);
+  }
+
+  async _prefetch(token, center) {
+    // Let the server prepare the views one move or zoom step away, one after the other, so
+    // they open without waiting for WetterOnline. Their frames are downloaded once opened.
+    for (const change of this._neighbors()) {
+      if (token !== this._loadToken || !this.isConnected) return;
+      const url = this._viewUrl({ ...this._selection, ...change }, center);
+      if (this._views.has(url)) continue;
+      // A view that fails here shows its error once opened.
+      await this._hass
+        .fetchWithAuth(url)
+        .then((response) => response.text())
+        .catch(() => undefined);
+    }
+  }
+
+  _neighbors() {
+    return [this._moved(1, 0), this._moved(-1, 0), this._moved(0, 1), this._moved(0, -1), this._zoomed(1), this._zoomed(-1)]
+      .filter(Boolean);
   }
 
   _nowIndex() {
@@ -419,6 +501,7 @@ class WetterOnlineRadarCard extends HTMLElement {
     const status = root.querySelector(".status");
     const viewport = root.querySelector(".viewport");
     viewport.classList.toggle("busy", state === "loading" && this._frames.length > 0);
+    root.querySelector(".spinner").hidden = state !== "loading";
     if (!state || (state === "loading" && this._frames.length)) {
       status.hidden = true;
       return;
@@ -490,6 +573,7 @@ class WetterOnlineRadarCard extends HTMLElement {
     const centers = [{ key: "location", label: this._data?.location?.name || "WetterOnline", ...this._data?.location }];
     const tracker = this._trackerPoint();
     if (tracker) centers.push({ key: "tracker", label: text.myLocation, ...tracker });
+    centers.push({ key: "germany", label: text.germany, latitude: GERMANY.latitude, longitude: GERMANY.longitude });
     this._config.places.forEach((place, index) => {
       centers.push({ ...place, key: `place:${index}`, label: place.name || `${place.latitude}, ${place.longitude}` });
     });
@@ -521,13 +605,19 @@ class WetterOnlineRadarCard extends HTMLElement {
     const active = centers.some((center) => center.key === this._center) ? this._center : "location";
     row.hidden = centers.length < 2;
     row.replaceChildren(
-      ...centers.map((center) =>
-        this._chip(center.label, center.key === active, () => {
-          this._center = center.key;
-          this._select({ pan_x: 0, pan_y: 0 });
-        })
-      )
+      ...centers.map((center) => this._chip(center.label, center.key === active, () => this._selectCenter(center.key)))
     );
+  }
+
+  _selectCenter(key) {
+    const change = { pan_x: 0, pan_y: 0 };
+    // All of Germany needs the widest view; leaving that view returns to the card's zoom.
+    if (key === "germany") change.zoom = GERMANY.zoom;
+    else if (this._center === "germany" && this._selection.zoom === GERMANY.zoom) {
+      change.zoom = this._config.zoom ?? DEFAULT_ZOOM;
+    }
+    this._center = key;
+    this._select(change);
   }
 
   _renderMarkers() {
@@ -685,20 +775,30 @@ class WetterOnlineRadarCard extends HTMLElement {
   }
 
   _zoom(delta) {
-    const levels = this._data?.zoom_levels || [];
-    const next = levels[levels.indexOf(this._data?.zoom) + delta];
-    if (next === undefined) return;
-    // Keep roughly the same section: one step is half a view, which doubles per level.
-    const maxPan = 2 ** (next - levels[0]) - 1;
-    const scale = (pan) => Math.max(-maxPan, Math.min(maxPan, delta > 0 ? pan * 2 : Math.round(pan / 2)));
-    this._select({ zoom: next, pan_x: scale(this._data.pan_x), pan_y: scale(this._data.pan_y) });
+    const change = this._zoomed(delta);
+    if (change) this._select(change);
   }
 
   _move(dx, dy) {
+    const change = this._moved(dx, dy);
+    if (change) this._select(change);
+  }
+
+  _zoomed(delta) {
+    const levels = this._data?.zoom_levels || [];
+    const next = levels[levels.indexOf(this._data?.zoom) + delta];
+    if (next === undefined) return null;
+    // Keep roughly the same section: one step is half a view, which doubles per level.
+    const maxPan = 2 ** (next - levels[0]) - 1;
+    const scale = (pan) => Math.max(-maxPan, Math.min(maxPan, delta > 0 ? pan * 2 : Math.round(pan / 2)));
+    return { zoom: next, pan_x: scale(this._data.pan_x), pan_y: scale(this._data.pan_y) };
+  }
+
+  _moved(dx, dy) {
     const { pan_x: panX, pan_y: panY, max_pan: maxPan } = this._data || {};
-    if (maxPan === undefined) return;
-    const clamp = (pan) => Math.max(-maxPan, Math.min(maxPan, pan));
-    this._select({ pan_x: clamp(panX + dx), pan_y: clamp(panY + dy) });
+    if (maxPan === undefined) return null;
+    const [x, y] = [panX + dx, panY + dy];
+    return Math.abs(x) <= maxPan && Math.abs(y) <= maxPan ? { pan_x: x, pan_y: y } : null;
   }
 }
 
