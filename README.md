@@ -123,7 +123,7 @@ once it moved an eighth of the map away. Optional settings:
 | `title` | none | Card title |
 | `layer` | from the entity | Map when opened: `weather`, `rain`, or `clouds` |
 | `period` | from the entity | `animation` (now), `today`, `tomorrow`, `in_2_days`, `in_3_days`, or `in_4_days` |
-| `zoom` | `7`; `6` with `center: germany` | Zoom level when opened: `6` (about the size of Germany), `7` (overview), `8` (×2), or `9` (×4) |
+| `zoom` | `8`; `6` with `center: germany` | Zoom level when opened: `6` (about the size of Germany), `7` (overview), `8` (×2), or `9` (×4) |
 | `center` | `location` | Center when opened: `location`, `tracker`, `germany`, or the name of a place |
 | `tracker` | own person | Person or device tracker for "My location"; by default the person of the user looking at the card |
 | `places` | none | Own centers, each with `name`, `latitude`, and `longitude` |

@@ -8,7 +8,7 @@ const CACHE_MS = 5 * 60 * 1000;
 const CACHED_VIEWS = 6;
 const SWIPE_STEP_PX = 24;
 const TRACKER_RELOAD_MS = 3000;
-const DEFAULT_ZOOM = 7;
+const DEFAULT_ZOOM = 8;
 // At zoom 6, a view around the middle of Germany shows all of it.
 const GERMANY = { latitude: 51.16, longitude: 10.45, zoom: 6 };
 const SELECTION_KEYS = ["layer", "period", "zoom", "pan_x", "pan_y"];
@@ -210,7 +210,7 @@ class WetterOnlineRadarCard extends HTMLElement {
     const placeIndex = this._config.places.findIndex((place) => place.name === config.center);
     this._center =
       placeIndex >= 0 ? `place:${placeIndex}` : ["tracker", "germany"].includes(config.center) ? config.center : "location";
-    // By default the card opens with the overview of its center, or all of Germany.
+    // Without a zoom, the card opens a step closer than the overview, or with all of Germany.
     const zoom = config.zoom ?? (this._center === "germany" ? GERMANY.zoom : DEFAULT_ZOOM);
     this._selection = { layer: config.layer, period: config.period, zoom, pan_x: 0, pan_y: 0 };
     this._playing = this._config.autoplay;
