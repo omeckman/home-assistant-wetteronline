@@ -39,6 +39,7 @@ const TEXT = {
       frame_duration: "Dauer pro Bild",
       autoplay: "Automatisch abspielen",
       title: "Titel",
+      map_size: "Kartengröße (z. B. 400px oder 60vh; leer: passend zum Bildschirm)",
       tracker: "Mein Standort aus (Standard: eigene Person)",
       center: "Mitte beim Öffnen",
     },
@@ -68,6 +69,7 @@ const TEXT = {
       frame_duration: "Duration per frame",
       autoplay: "Play automatically",
       title: "Title",
+      map_size: "Map size (e.g. 400px or 60vh; empty: fit the screen)",
       tracker: "My location from (default: own person)",
       center: "Center when opened",
     },
@@ -101,7 +103,12 @@ const STYLE = `
     font: inherit; font-size: 0.9em; cursor: pointer;
   }
   .chip.selected { background: var(--primary-color); border-color: var(--primary-color); color: var(--text-primary-color, #fff); }
-  .viewport { position: relative; margin-top: 8px; aspect-ratio: 1; background: var(--secondary-background-color); touch-action: pan-y; user-select: none; }
+  /* The square map fills the card width, but leaves room on screen for the rest of the card. */
+  .viewport {
+    position: relative; margin: 8px auto 0; aspect-ratio: 1;
+    width: min(100%, var(--map-size, max(240px, calc(100dvh - var(--header-height, 56px) - var(--card-rest, 0px) - 16px))));
+    background: var(--secondary-background-color); touch-action: pan-y; user-select: none;
+  }
   .viewport img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; transition: opacity 0.2s; }
   .viewport.busy img { opacity: 0.5; }
   .time {
@@ -194,6 +201,7 @@ class WetterOnlineRadarCard extends HTMLElement {
         },
         { name: "frame_duration", selector: { number: { min: 200, max: 5000, step: 100, unit_of_measurement: "ms" } } },
         { name: "autoplay", selector: { boolean: {} } },
+        { name: "map_size", selector: { text: {} } },
       ],
       computeLabel: (schema) => text.editor[schema.name] || schema.name,
     };
@@ -248,11 +256,13 @@ class WetterOnlineRadarCard extends HTMLElement {
   }
 
   connectedCallback() {
+    this._observeSize();
     this._refreshTimer = setInterval(() => this._load({ refresh: true, prefetch: false }), REFRESH_MS);
     this._syncPlayback();
   }
 
   disconnectedCallback() {
+    this._sizeObserver?.disconnect();
     clearInterval(this._refreshTimer);
     clearTimeout(this._trackerTimer);
     clearInterval(this._playTimer);
@@ -317,6 +327,12 @@ class WetterOnlineRadarCard extends HTMLElement {
       this._syncPlayback();
       this._update();
     });
+    const mapSize = this._config.map_size;
+    if (mapSize) {
+      const size = typeof mapSize === "number" || /^\d+$/.test(mapSize) ? `${mapSize}px` : String(mapSize);
+      root.querySelector(".viewport").style.setProperty("--map-size", size);
+    }
+    this._observeSize();
     root.querySelector(".zoom-in").addEventListener("click", () => this._zoom(1));
     root.querySelector(".zoom-out").addEventListener("click", () => this._zoom(-1));
     root.querySelector(".move-left").addEventListener("click", () => this._move(-1, 0));
@@ -330,6 +346,21 @@ class WetterOnlineRadarCard extends HTMLElement {
     });
     this._bindSwipe(root.querySelector(".viewport"));
     this._update();
+  }
+
+  // The map's size depends on the height of the rest of the card: title, buttons, and timeline.
+  _observeSize() {
+    const card = this.shadowRoot?.querySelector("ha-card");
+    if (!card) return;
+    this._sizeObserver ||= new ResizeObserver(() => {
+      const card = this.shadowRoot.querySelector("ha-card");
+      const viewport = this.shadowRoot.querySelector(".viewport");
+      if (!card || !viewport) return;
+      const rest = `${Math.round(card.offsetHeight - viewport.offsetHeight)}px`;
+      if (card.style.getPropertyValue("--card-rest") !== rest) card.style.setProperty("--card-rest", rest);
+    });
+    this._sizeObserver.disconnect();
+    this._sizeObserver.observe(card);
   }
 
   _bindSwipe(viewport) {
