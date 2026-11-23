@@ -38,6 +38,18 @@ def map_condition(symbol: str | None) -> str | None:
     #   r = rain, s = rain showers, sn/sns = snow (showers),
     #   sr/srs = sleet (showers), g/gr/sg = thunderstorm.
     # A trailing digit 1-3 gives the intensity; "_" is padding.
+    #
+    # See GLG9/home-assistant-wetteronline#1: every "s" used to be mapped to
+    # snow, so rain showers (e.g. "wbs1__") showed up as snow at 20 °C. The
+    # codes were verified via the content hashes in WetterOnline's asset
+    # manifest: "wbs1__" uses the same image as "wbr1__", "wbsns1" the same
+    # as "wbsn1_", while "sr"/"srs" have their own sleet image.
+    #
+    # Unlike the fix proposed in that issue, we strip the "_" padding before
+    # reading the intensity. Otherwise "wbr2__" never ends in "2" and heavy
+    # rain never becomes "pouring". Showers ("s") use the same intensity rule
+    # as rain because WetterOnline draws "wbs2__" with the same image as
+    # "wbr2__".
     precipitation = value[2:].rstrip("_")
     kind = precipitation.rstrip("0123456789")
     if "g" in kind:
