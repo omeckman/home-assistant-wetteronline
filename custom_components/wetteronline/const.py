@@ -34,12 +34,18 @@ def map_condition(symbol: str | None) -> str | None:
     if not symbol:
         return None
     value = symbol.lower()
-    if "g" in value[2:]:
+    # Precipitation suffix codes (verified against WetterOnline's symbol assets):
+    #   r = rain, s = rain showers, sn/sns = snow (showers),
+    #   sr/srs = sleet (showers), g/gr/sg = thunderstorm.
+    # A trailing digit 1-3 gives the intensity; "_" is padding.
+    precipitation = value[2:].rstrip("_")
+    kind = precipitation.rstrip("0123456789")
+    if "g" in kind:
         return "lightning-rainy"
-    if "sn" in value[2:]:
+    if kind.startswith("sr"):
         return "snowy-rainy"
-    if "s" in value[2:]:
+    if kind.startswith("sn"):
         return "snowy"
-    if "r" in value[2:]:
-        return "pouring" if value.endswith(("2_", "3_", "2", "3")) else "rainy"
+    if kind in ("r", "s"):
+        return "pouring" if precipitation.endswith(("2", "3")) else "rainy"
     return SYMBOL_CONDITION_MAP.get(value[:2], "exceptional")
