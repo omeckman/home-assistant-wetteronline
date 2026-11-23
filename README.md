@@ -129,6 +129,7 @@ once it moved an eighth of the map away. Optional settings:
 | `places` | none | Own centers, each with `name`, `latitude`, and `longitude` |
 | `frame_duration` | `1000` | Milliseconds per frame while playing |
 | `autoplay` | `true` | Start playing when opened |
+| `map_size` | fit the screen | Width and height of the square map, for example `400px` or `60vh`. By default the map fills the card width, but at most so far that the whole card fits on the screen |
 | `periods` | all | Periods offered as buttons, for example `[animation, today, tomorrow]` |
 | `layers` | all | Maps offered as buttons, for example `[weather, rain]` |
 
