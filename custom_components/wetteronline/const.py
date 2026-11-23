@@ -37,12 +37,30 @@ def map_condition(symbol: str | None) -> str | None:
     if not symbol:
         return None
     value = symbol.lower()
-    if "g" in value[2:]:
+    # Precipitation suffix codes (verified against WetterOnline's symbol assets):
+    #   r = rain, s = rain showers, sn/sns = snow (showers),
+    #   sr/srs = sleet (showers), g/gr/sg = thunderstorm.
+    # A trailing digit 1-3 gives the intensity; "_" is padding.
+    #
+    # See GLG9/home-assistant-wetteronline#1: every "s" used to be mapped to
+    # snow, so rain showers (e.g. "wbs1__") showed up as snow at 20 °C. The
+    # codes were verified via the content hashes in WetterOnline's asset
+    # manifest: "wbs1__" uses the same image as "wbr1__", "wbsns1" the same
+    # as "wbsn1_", while "sr"/"srs" have their own sleet image.
+    #
+    # Unlike the fix proposed in that issue, we strip the "_" padding before
+    # reading the intensity. Otherwise "wbr2__" never ends in "2" and heavy
+    # rain never becomes "pouring". Showers ("s") use the same intensity rule
+    # as rain because WetterOnline draws "wbs2__" with the same image as
+    # "wbr2__".
+    precipitation = value[2:].rstrip("_")
+    kind = precipitation.rstrip("0123456789")
+    if "g" in kind:
         return "lightning-rainy"
-    if "sn" in value[2:]:
+    if kind.startswith("sr"):
         return "snowy-rainy"
-    if "s" in value[2:]:
+    if kind.startswith("sn"):
         return "snowy"
-    if "r" in value[2:]:
-        return "pouring" if value.endswith(("2_", "3_", "2", "3")) else "rainy"
+    if kind in ("r", "s"):
+        return "pouring" if precipitation.endswith(("2", "3")) else "rainy"
     return SYMBOL_CONDITION_MAP.get(value[:2], "exceptional")
