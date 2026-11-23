@@ -84,16 +84,15 @@ def test_moved_views_cover_exactly_the_overview() -> None:
         renderer.view(8, 4, 0)
 
 
-def test_card_views_snap_to_half_tiles() -> None:
-    """Nearby centers, e.g. a moving phone, share the same frames."""
+def test_card_views_are_centered_on_the_location() -> None:
+    """The location sits in the middle of the map, not rounded to a nearby tile edge."""
     renderer = RadarRenderer(None, 52.517, 13.4)  # type: ignore[arg-type]
-    first = renderer.view(8, center=(48.1400, 11.5800), snap=True)
-    nearby = renderer.view(8, center=(48.1405, 11.5806), snap=True)
-    exact = renderer.view(8, center=(48.1400, 11.5800))
-
-    assert first.origin == nearby.origin
-    assert first.marker != nearby.marker
-    assert exact.center == exact.marker
+    for center in (None, (48.1400, 11.5800), (48.1405, 11.5806), (53.55, 9.99)):
+        for zoom in ZOOM_LEVELS:
+            view = renderer.view(zoom, center=center)
+            assert view.center == view.marker
+            left, top, right, bottom = view.crop
+            assert (view.marker[0] - left, view.marker[1] - top) == (384, 384)
 
 
 def _base_map() -> tuple[bytes, None]:
@@ -259,7 +258,7 @@ async def test_germany_view_scales_down_zoom_7_radar_tiles() -> None:
         renderer = RadarRenderer(session, 52.517, 13.4)
         renderer._fetch = AsyncMock(return_value=_tile("#ff0000"))  # type: ignore[method-assign]
         # The center of the card's Germany view.
-        view = renderer.view(6, center=(51.16, 10.45), snap=True)
+        view = renderer.view(6, center=(51.16, 10.45))
         layers = await renderer._radar_layers(_timestep("20261113-0530-1"), view)
 
     for latitude, longitude in ((55.06, 8.42), (47.27, 10.18), (51.05, 5.87), (51.27, 15.04)):
@@ -269,8 +268,12 @@ async def test_germany_view_scales_down_zoom_7_radar_tiles() -> None:
     blocks = view.radar_blocks
     descriptors = [_descriptor(call.args[0]) for call in renderer._fetch.await_args_list]
     assert {(block.zoom, block.size) for block in blocks} == {(7, 256)}
-    # Of the 4x4 zoom-7 blocks below the map blocks, the bottom row is outside the section.
-    assert len(blocks) == len(descriptors) == 12
+    # Only the zoom-7 blocks below the map blocks that reach into the section are fetched.
+    left, top, right, bottom = view.crop
+    assert len(blocks) == len(descriptors) < view.columns * view.rows * 4
+    for block in blocks:
+        assert block.left < right and left < block.left + block.size
+        assert block.top < bottom and top < block.top + block.size
     assert descriptors[0].startswith(
         f"r|1;;0;0;false|area/eu/2026/11/13/05/30/v1/ZL7/522/sprite/{blocks[0].x}_{blocks[0].y}"
     )
