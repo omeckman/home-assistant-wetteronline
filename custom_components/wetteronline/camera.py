@@ -190,16 +190,11 @@ class MapView:
         zoom: int,
         pan_x: int = 0,
         pan_y: int = 0,
-        snap: bool = False,
     ) -> MapView:
-        """Center the view on a location, optionally snapped and moved by half views."""
+        """Center the view on a location, optionally moved by half views."""
         world_x, world_y = _world(latitude, longitude, zoom)
-        center_x, center_y = world_x, world_y
-        if snap:
-            # Nearby centers share their frames, e.g. while a phone moves a little.
-            center_x, center_y = round(world_x * 2) / 2, round(world_y * 2) / 2
-        center_x += pan_x * 1.5
-        center_y += pan_y * 1.5
+        center_x = world_x + pan_x * 1.5
+        center_y = world_y + pan_y * 1.5
         # The view spans three or four tiles per axis, fetched as 2x2 blocks.
         left = math.floor(center_x - 1.5) // 2 * 2
         top = math.floor(center_y - 1.5) // 2 * 2
@@ -438,7 +433,6 @@ class RadarRenderer:
         pan_x: int = 0,
         pan_y: int = 0,
         center: tuple[float, float] | None = None,
-        snap: bool = False,
     ) -> MapView:
         """Return a map section at a supported zoom level, by default around the location."""
         if zoom not in ZOOM_LEVELS:
@@ -446,7 +440,7 @@ class RadarRenderer:
         if abs(pan_x) > max_pan(zoom) or abs(pan_y) > max_pan(zoom):
             raise ValueError(f"Unsupported move {pan_x}, {pan_y} at zoom level {zoom}")
         latitude, longitude = center or (self.latitude, self.longitude)
-        return MapView.around(latitude, longitude, zoom, pan_x, pan_y, snap)
+        return MapView.around(latitude, longitude, zoom, pan_x, pan_y)
 
     async def _get_json(self, params: dict[str, str], max_age: timedelta) -> dict[str, Any]:
         return json.loads(await self._fetch(f"{METADATA_URL}?{urlencode(params)}", max_age))
@@ -751,7 +745,7 @@ class RadarRenderer:
         center: tuple[float, float] | None = None,
     ) -> RadarFrames | None:
         """Return cached single frames for the radar card; no period means the current one."""
-        view = self.view(zoom, pan_x, pan_y, center, snap=True)
+        view = self.view(zoom, pan_x, pan_y, center)
         return await self._cached(
             f"frames_{period.key if period else 'current'}_{zoom}_{view.origin}",
             period.max_age if period else RADAR_INTERVAL,

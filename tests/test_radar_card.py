@@ -16,7 +16,7 @@ FRAMES = RadarFrames(
     ("20261113-0800-1", "20261113-0900-1"),
     (b"first", b"second"),
     None,
-    MapView.around(52.517, 13.4, 8, snap=True),
+    MapView.around(52.517, 13.4, 8),
 )
 
 
@@ -65,8 +65,8 @@ async def test_frames_default_to_the_cameras_layer_and_period(
         "y": FRAMES.view.origin[1],
         "size": 768,
     }
-    # Berlin's center snapped to the half tile 137.5 at zoom 8, minus half a view.
-    assert FRAMES.view.origin[0] == (137.5 - 1.5) * 256
+    # Berlin's world pixel at zoom 8, minus half a view.
+    assert FRAMES.view.origin[0] == int((13.4 + 180) / 360 * 256 * 2**8) - 384
     assert frame.status == 200
     assert frame.content_type == "image/webp"
     assert body == b"second"
