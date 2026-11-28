@@ -125,7 +125,7 @@ const STYLE = `
   .temps { position: absolute; inset: 0; pointer-events: none; }
   /* Without a box, a white outline keeps the text readable on any map color. */
   .temp {
-    position: absolute; transform: translate(-50%, -50%); color: #d40000;
+    position: absolute; transform: translate(-50%, -50%); color: #1f1f1f;
     font-size: 13px; font-weight: 700; line-height: 16px; white-space: nowrap;
     text-shadow: -1px -1px 0 #fff, 1px -1px 0 #fff, -1px 1px 0 #fff, 1px 1px 0 #fff, 0 0 3px #fff;
   }
