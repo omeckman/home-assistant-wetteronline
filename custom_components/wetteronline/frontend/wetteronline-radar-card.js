@@ -123,10 +123,11 @@ const STYLE = `
   .badge { font-size: 0.55em; font-weight: 600; background: #fff; color: #000; border-radius: 6px; padding: 1px 6px; text-shadow: none; }
   .credits { position: absolute; right: 6px; bottom: 4px; color: #fff; font-size: 0.7em; text-shadow: 0 0 2px #000, 0 0 2px #000; }
   .temps { position: absolute; inset: 0; pointer-events: none; }
+  /* Without a box, a white outline keeps the text readable on any map color. */
   .temp {
-    position: absolute; transform: translate(-50%, -50%); padding: 0 4px; border-radius: 3px;
-    background: rgba(255, 255, 255, 0.9); border: 1px solid #8a8a8a; color: #d40000;
-    font-size: 12px; font-weight: 700; line-height: 16px; white-space: nowrap;
+    position: absolute; transform: translate(-50%, -50%); color: #d40000;
+    font-size: 13px; font-weight: 700; line-height: 16px; white-space: nowrap;
+    text-shadow: -1px -1px 0 #fff, 1px -1px 0 #fff, -1px 1px 0 #fff, 1px 1px 0 #fff, 0 0 3px #fff;
   }
   .temp .name { color: #222; font-weight: 500; margin-right: 4px; }
   .chip.toggle { display: inline-flex; align-items: center; gap: 4px; margin-left: 6px; }
