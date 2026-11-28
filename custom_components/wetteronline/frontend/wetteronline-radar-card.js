@@ -126,8 +126,8 @@ const STYLE = `
   /* Without a box, a white outline keeps the text readable on any map color. */
   .temp {
     position: absolute; transform: translate(-50%, -50%); color: #1f1f1f;
-    font-size: 13px; font-weight: 700; line-height: 16px; white-space: nowrap;
-    text-shadow: -1px -1px 0 #fff, 1px -1px 0 #fff, -1px 1px 0 #fff, 1px 1px 0 #fff, 0 0 3px #fff;
+    font-size: 12px; font-weight: 600; line-height: 15px; white-space: nowrap;
+    text-shadow: 0 0 2px #fff, 0 0 2px #fff, 0 0 1px #fff;
   }
   .temp .name { color: #222; font-weight: 500; margin-right: 4px; }
   .chip.toggle { display: inline-flex; align-items: center; gap: 4px; margin-left: 6px; }
