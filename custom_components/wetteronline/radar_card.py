@@ -148,6 +148,7 @@ class RadarFramesView(HomeAssistantView):
         selection = _selection(request, entity_id)
         frames = await selection.frames()
         renderer, timeline, view = selection.renderer, frames.timeline, frames.view
+        names_on_map = renderer.layer.wetteronline_map
 
         def iso(time: datetime | None) -> str | None:
             return time.isoformat() if time else None
@@ -174,13 +175,29 @@ class RadarFramesView(HomeAssistantView):
                 "start": iso(timeline.start if timeline else None),
                 "end": iso(timeline.end if timeline else None),
                 "credits": renderer.layer.credits,
+                # Where the map has no city names, the card shows them with the temperatures.
+                "city_names_on_map": names_on_map,
+                "cities": [
+                    {
+                        "id": city.id,
+                        "name": city.name,
+                        "latitude": (city.label if names_on_map else city.city)[0],
+                        "longitude": (city.label if names_on_map else city.city)[1],
+                    }
+                    for city in frames.cities
+                ],
                 "frames": [
                     {
                         "id": step_id,
                         "time": iso(_step_time(step_id)),
                         "url": f"{API_URL}/{entity_id}/{step_id}?{selection.query}",
+                        "temperatures": temperatures,
                     }
-                    for step_id in frames.step_ids
+                    for step_id, temperatures in zip(
+                        frames.step_ids,
+                        frames.temperatures or ({},) * len(frames.step_ids),
+                        strict=True,
+                    )
                 ],
             }
         )

@@ -33,6 +33,8 @@ if TYPE_CHECKING:
 METADATA_URL = "https://tiles.wo-cloud.com/metadata"
 COMPOSITE_URL = "https://tiles.wo-cloud.com/composite"
 OSM_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+# WetterOnline's radar cities and, per zoom level, where their temperatures are shown.
+CITIES_URL = "https://radar.wo-cloud.com/cities/{version}/{kind}/{locale}.json"
 HEADERS = {
     "User-Agent": "HomeAssistant-WetterOnline/2.0 (+https://github.com/GLG9/home-assistant-wetteronline)"
 }
@@ -52,6 +54,7 @@ MAX_CACHED_BASE_MAPS = 12
 # Downloads shared by all locations, so moved and neighboring views reuse their tiles.
 MAX_CACHED_TILE_BYTES = 48 * 1024 * 1024
 MAP_TILE_MAX_AGE = timedelta(days=1)
+CITY_DATA_MAX_AGE = timedelta(days=1)
 METADATA_MAX_AGE = timedelta(minutes=1)
 # Part of the GIF web palette, so the timeline is not dithered.
 ACCENT = "#0099cc"
@@ -219,6 +222,12 @@ class MapView:
         """Return the world pixel of the top-left corner of the section."""
         return (self.left * 256 + self.crop[0], self.top * 256 + self.crop[1])
 
+    def contains(self, latitude: float, longitude: float) -> bool:
+        """Return whether a coordinate lies within the section."""
+        x, y = _world(latitude, longitude, self.zoom)
+        left, top = self.origin
+        return 0 <= x * 256 - left < 768 and 0 <= y * 256 - top < 768
+
     @property
     def origins(self) -> list[tuple[int, int]]:
         """Return the top-left tile of every 2x2 block, row by row."""
@@ -266,6 +275,61 @@ class RadarFrames:
     images: tuple[bytes, ...]
     timeline: Timeline | None
     view: MapView
+    # The cities in the view, largest first, and their rounded temperature in each frame.
+    cities: tuple[CityLabel, ...] = ()
+    temperatures: tuple[dict[str, int], ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class RenderedFrames:
+    """Rendered radar frames by time step, with the cities' temperatures in each."""
+
+    frames: list[tuple[str, Image.Image]]
+    timeline: Timeline | None
+    cities: tuple[CityLabel, ...]
+    temperatures: tuple[dict[str, int], ...]
+
+
+async def _no_cities(
+    steps: list[dict[str, Any]],
+) -> tuple[tuple[CityLabel, ...], tuple[dict[str, int], ...]]:
+    return (), tuple({} for _ in steps)
+
+
+@dataclass(frozen=True, slots=True)
+class CityLabel:
+    """A WetterOnline radar city and where its temperature is shown."""
+
+    id: str
+    name: str
+    population: int
+    # Next to the city's name on the WetterOnline map, or on the city itself.
+    label: tuple[float, float]
+    city: tuple[float, float]
+
+
+class CityDirectory:
+    """WetterOnline's radar cities shown at each zoom level of the card."""
+
+    def __init__(self, names: dict[str, Any], levels: dict[str, Any]) -> None:
+        self.levels: dict[int, dict[str, CityLabel]] = {}
+        for zoom in ZOOM_LEVELS:
+            labels = {}
+            for city_id, level in (levels.get(f"ZL{zoom}") or {}).items():
+                if (info := names.get(city_id)) and "tt" in level and "city" in level:
+                    labels[city_id] = CityLabel(
+                        city_id,
+                        info["name"],
+                        int(info.get("population") or 0),
+                        (float(level["tt"][0]), float(level["tt"][1])),
+                        (float(level["city"][0]), float(level["city"][1])),
+                    )
+            self.levels[zoom] = labels
+
+    @classmethod
+    def parse(cls, names: bytes, levels: bytes) -> CityDirectory:
+        """Read the downloaded city names and zoom levels."""
+        return cls(json.loads(names), json.loads(levels))
 
 
 def _layer_path(layer: dict[str, Any], time_path: list[str]) -> str:
@@ -379,6 +443,9 @@ class TileCache:
         self._entries: dict[str, tuple[datetime, bytes]] = {}
         self._max_bytes = max_bytes
         self._size = 0
+        # The city directory is large, so all locations share one per version and locale.
+        self.cities: dict[str, tuple[datetime, CityDirectory]] = {}
+        self.cities_lock = asyncio.Lock()
 
     def get(self, url: str) -> bytes | None:
         """Return a download that has not expired yet."""
@@ -451,12 +518,13 @@ class RadarRenderer:
             METADATA_MAX_AGE,
         )
 
-    async def _fetch(self, url: str, max_age: timedelta) -> bytes:
+    async def _fetch(self, url: str, max_age: timedelta, keep: bool = True) -> bytes:
         if (data := self._tiles.get(url)) is None:
             async with self._tile_limit, self.session.get(url, headers=HEADERS) as response:
                 response.raise_for_status()
                 data = await response.read()
-            self._tiles.put(url, data, max_age)
+            if keep:
+                self._tiles.put(url, data, max_age)
         return data
 
     async def _composite(self, descriptor: str, time: str | None = None) -> bytes:
@@ -466,6 +534,115 @@ class RadarRenderer:
         # Radar tiles change with the radar; map tiles hardly ever.
         max_age = RADAR_INTERVAL if time else MAP_TILE_MAX_AGE
         return await self._fetch(f"{COMPOSITE_URL}?{urlencode(params)}", max_age)
+
+    async def _composite_data(self, descriptor: str, time: str) -> dict[str, Any]:
+        """Return the data the composite service appends to a metadata tile."""
+        params = {
+            "k": "0",
+            "lg": "wr",
+            "tiles": base64.b64encode(descriptor.encode()).decode(),
+            "format": "webp",
+            "time": time,
+        }
+        url = f"{COMPOSITE_URL}?{urlencode(params)}"
+        if (data := self._tiles.get(url)) is None:
+            async with self._tile_limit, self.session.get(url, headers=HEADERS) as response:
+                response.raise_for_status()
+                body = await response.read()
+                # The image is followed by the data, e.g. "temperature:305:json".
+                custom = response.headers.get("X-Custom-Body", "").split(":")
+            size = int(custom[1]) if len(custom) == 3 and custom[2] == "json" else 0
+            data = body[len(body) - size :] if 0 < size <= len(body) else b"{}"
+            self._tiles.put(url, data, RADAR_INTERVAL)
+        return json.loads(data)
+
+    async def _city_directory(self) -> CityDirectory:
+        """Return WetterOnline's radar cities with their names in the renderer's language."""
+        geo = await self._get_json({"type": "geo"}, MAP_TILE_MAX_AGE)
+        info = geo["cities"]
+        locale = self.language if self.language in info["locales"] else "default"
+        key = f"{info['currentVersion']}/{locale}"
+        shared = self._tiles.cities
+        async with self._tiles.cities_lock:
+            cached = shared.get(key)
+            if cached and cached[0] > datetime.now(UTC):
+                return cached[1]
+            names, levels = await asyncio.gather(
+                *(
+                    self._fetch(
+                        CITIES_URL.format(version=info["currentVersion"], kind=kind, locale=locale),
+                        CITY_DATA_MAX_AGE,
+                        keep=False,
+                    )
+                    for kind in ("cities", "levelInfo")
+                )
+            )
+            directory = await asyncio.to_thread(CityDirectory.parse, names, levels)
+            shared.clear()
+            shared[key] = (datetime.now(UTC) + CITY_DATA_MAX_AGE, directory)
+            return directory
+
+    async def _step_temperatures(self, step: dict[str, Any], view: MapView) -> dict[str, float]:
+        """Return the temperature of every WetterOnline city in the view at a time step."""
+        layer = ((step.get("layers") or {}).get("global") or {}).get("cityWeatherData")
+        if not layer:
+            return {}
+        # Above its native zoom level, the blocks of that level cover the view.
+        zoom = min(view.zoom, int(layer.get("mnz") or view.zoom))
+        scale = 2 ** (view.zoom - zoom)
+        left, top = view.origin
+        # A 768 px view can reach into three 512 px blocks per axis.
+        blocks = [
+            (2 * x, 2 * y)
+            for y in range(top // scale // 512, (top + 767) // scale // 512 + 1)
+            for x in range(left // scale // 512, (left + 767) // scale // 512 + 1)
+        ]
+        path = _layer_path(layer, layer["timePath"])
+        results = await asyncio.gather(
+            *(
+                self._composite_data(f"t|1;m;0;0|{path}/ZL{zoom}/512/{x}_{y}.json", step["id"])
+                for x, y in blocks
+            ),
+            return_exceptions=True,
+        )
+        temperatures: dict[str, float] = {}
+        for result in results:
+            if isinstance(result, dict):
+                temperatures |= {
+                    city_id: float(value)
+                    for city_id, value in result.items()
+                    if isinstance(value, int | float)
+                }
+        return temperatures
+
+    async def _city_temperatures(
+        self, steps: list[dict[str, Any]], view: MapView
+    ) -> tuple[tuple[CityLabel, ...], tuple[dict[str, int], ...]]:
+        """Return the cities in the view and their rounded temperature at each step."""
+        try:
+            directory, *temperatures = await asyncio.gather(
+                self._city_directory(), *(self._step_temperatures(step, view) for step in steps)
+            )
+        except ClientError, TimeoutError, KeyError, ValueError, OSError:
+            return (), tuple({} for _ in steps)
+        labels = directory.levels.get(view.zoom, {})
+        # The temperature goes next to the city's name where the WetterOnline map shows it.
+        cities = [
+            label
+            for city_id in set().union(*temperatures)
+            if (label := labels.get(city_id))
+            and view.contains(*(label.label if self.layer.wetteronline_map else label.city))
+        ]
+        cities.sort(key=lambda label: (-label.population, label.id))
+        shown = {label.id for label in cities}
+        return tuple(cities), tuple(
+            {
+                city_id: math.floor(value + 0.5)
+                for city_id, value in step.items()
+                if city_id in shown
+            }
+            for step in temperatures
+        )
 
     async def _base_map(self, view: MapView) -> tuple[bytes, bytes | None]:
         """Return the cached background and the optional overlay drawn above the radar."""
@@ -753,13 +930,26 @@ class RadarRenderer:
         )
 
     async def _render_frames(
-        self, period: RadarPeriod | None, view: MapView, footer: bool, marker: bool = True
-    ) -> tuple[list[tuple[str, Image.Image]], Timeline | None] | None:
+        self,
+        period: RadarPeriod | None,
+        view: MapView,
+        footer: bool,
+        marker: bool = True,
+        temperatures: bool = False,
+    ) -> RenderedFrames | None:
         now = dt_util.now()
         steps, base = await asyncio.gather(self._animation_steps(period, now), self._base_map(view))
-        layers = await asyncio.gather(
-            *(self._radar_layers(step, view) for step in steps), return_exceptions=True
+        # City temperatures load along with the radar tiles.
+        layers, city_data = await asyncio.gather(
+            asyncio.gather(
+                *(self._radar_layers(step, view) for step in steps), return_exceptions=True
+            ),
+            self._city_temperatures(steps, view) if temperatures else _no_cities(steps),
         )
+        cities, step_temperatures = city_data
+        by_step = {
+            step["id"]: values for step, values in zip(steps, step_temperatures, strict=True)
+        }
         available = [
             (step["id"], layer)
             for step, layer in zip(steps, layers, strict=True)
@@ -783,34 +973,44 @@ class RadarRenderer:
             )
             for step_id, layer in available
         ]
-        return frames, timeline
+        return RenderedFrames(
+            frames, timeline, cities, tuple(by_step[step_id] for step_id, _ in available)
+        )
 
     async def _render_current(self) -> bytes | None:
         rendered = await self._render_frames(None, self.view(), footer=True)
         if rendered is None:
             return None
         out = BytesIO()
-        await asyncio.to_thread(rendered[0][0][1].convert("RGB").save, out, "PNG")
+        await asyncio.to_thread(rendered.frames[0][1].convert("RGB").save, out, "PNG")
         return out.getvalue()
 
     async def _render_animation(self, period: RadarPeriod) -> bytes | None:
         rendered = await self._render_frames(period, self.view(), footer=True)
         if rendered is None:
             return None
-        frames = [frame for _, frame in rendered[0]]
+        frames = [frame for _, frame in rendered.frames]
         duration = min(MAX_FRAME_MS, ANIMATION_LOOP_MS // len(frames))
         return await asyncio.to_thread(_encode_gif, frames, duration)
 
     async def _render_card_frames(
         self, period: RadarPeriod | None, view: MapView
     ) -> RadarFrames | None:
-        # The card draws the markers itself, so frames of nearby centers can be shared.
-        rendered = await self._render_frames(period, view, footer=False, marker=False)
+        # The card draws the markers and temperatures itself, so it can switch them off.
+        rendered = await self._render_frames(
+            period, view, footer=False, marker=False, temperatures=True
+        )
         if rendered is None:
             return None
-        frames, timeline = rendered
-        images = [await asyncio.to_thread(_encode_webp, frame) for _, frame in frames]
-        return RadarFrames(tuple(step_id for step_id, _ in frames), tuple(images), timeline, view)
+        images = [await asyncio.to_thread(_encode_webp, frame) for _, frame in rendered.frames]
+        return RadarFrames(
+            tuple(step_id for step_id, _ in rendered.frames),
+            tuple(images),
+            rendered.timeline,
+            view,
+            rendered.cities,
+            rendered.temperatures,
+        )
 
 
 async def async_setup_entry(
