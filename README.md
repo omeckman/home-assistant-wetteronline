@@ -105,6 +105,8 @@ or HACS frontend repository is needed.
   with the arrows at its edges, within the area of the widest step
 - Center the map on the WetterOnline location, on your phone's position, or on your own
   places, or show all of Germany
+- Temperatures of the cities on the map for every frame, as on WetterOnline's own radar;
+  switch them off and on with the **Temperatures** button
 - Views one move or zoom step away are prepared in the background, so they open quickly
 
 Add it with **Add card → WetterOnline Radar**, or in YAML:
@@ -129,6 +131,7 @@ once it moved an eighth of the map away. Optional settings:
 | `places` | none | Own centers, each with `name`, `latitude`, and `longitude` |
 | `frame_duration` | `1000` | Milliseconds per frame while playing |
 | `autoplay` | `true` | Start playing when opened |
+| `temperatures` | `true` | Show the temperatures of cities when opened |
 | `map_size` | fit the screen | Width and height of the square map, for example `400px` or `60vh`. By default the map fills the card width, but at most so far that the whole card fits on the screen |
 | `periods` | all | Periods offered as buttons, for example `[animation, today, tomorrow]` |
 | `layers` | all | Maps offered as buttons, for example `[weather, rain]` |

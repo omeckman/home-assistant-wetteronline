@@ -6,17 +6,20 @@ from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 from pytest_homeassistant_custom_component.typing import ClientSessionGenerator
 
-from custom_components.wetteronline.camera import MapView, RadarFrames, RadarRenderer
+from custom_components.wetteronline.camera import CityLabel, MapView, RadarFrames, RadarRenderer
 from custom_components.wetteronline.const import CONF_LOCATION, CONF_LOCATION_ID, DOMAIN
 from custom_components.wetteronline.radar_card import CARD_URL
 
 from .test_config_flow import sample_data
 
+BERLIN = CityLabel("WRC01", "Berlin", 3426354, (52.56, 13.4), (52.5167, 13.4))
 FRAMES = RadarFrames(
     ("20261113-0800-1", "20261113-0900-1"),
     (b"first", b"second"),
     None,
     MapView.around(52.517, 13.4, 8),
+    (BERLIN,),
+    ({"WRC01": -2}, {"WRC01": -1}),
 )
 
 
@@ -56,7 +59,14 @@ async def test_frames_default_to_the_cameras_layer_and_period(
         "time": "2026-11-13T08:00:00+00:00",
         "url": "/api/wetteronline/radar/camera.berlin_rain_radar_tomorrow/20261113-0800-1"
         "?layer=rain&period=tomorrow&zoom=8&pan_x=0&pan_y=0",
+        "temperatures": {"WRC01": -2},
     }
+    assert data["frames"][1]["temperatures"] == {"WRC01": -1}
+    # The OpenStreetMap of the rain radar has no WetterOnline city names to sit next to.
+    assert data["city_names_on_map"] is False
+    assert data["cities"] == [
+        {"id": "WRC01", "name": "Berlin", "latitude": 52.5167, "longitude": 13.4}
+    ]
     assert data["location"] == {"name": "Berlin", "latitude": 52.517, "longitude": 13.4}
     assert (data["pan_x"], data["pan_y"], data["max_pan"]) == (0, 0, 3)
     assert data["view"] == {
@@ -98,6 +108,11 @@ async def test_frames_follow_the_selected_layer_period_and_zoom(
     assert (data["layer"], data["period"], data["zoom"]) == ("clouds", "in_3_days", 9)
     assert (data["pan_x"], data["pan_y"], data["max_pan"]) == (-3, 2, 7)
     assert data["credits"] == "WetterOnline"
+    # The temperature goes next to the city's name on the WetterOnline map.
+    assert data["city_names_on_map"] is True
+    assert data["cities"] == [
+        {"id": "WRC01", "name": "Berlin", "latitude": 52.56, "longitude": 13.4}
+    ]
     assert data["frames"][0]["url"].endswith(
         "?layer=clouds&period=in_3_days&zoom=9&pan_x=-3&pan_y=2&lat=48.13743&lon=11.57549"
     )

@@ -30,6 +30,7 @@ const TEXT = {
     myLocation: "Mein Standort",
     germany: "Deutschland",
     recenter: "Zur Mitte",
+    temperatures: "Temperaturen",
     move: { left: "Nach links", right: "Nach rechts", up: "Nach oben", down: "Nach unten" },
     editor: {
       entity: "WetterOnline-Entität des Orts",
@@ -38,6 +39,7 @@ const TEXT = {
       zoom: "Zoomstufe beim Öffnen",
       frame_duration: "Dauer pro Bild",
       autoplay: "Automatisch abspielen",
+      temperatures: "Temperaturen der Städte zeigen",
       title: "Titel",
       map_size: "Kartengröße (z. B. 400px oder 60vh; leer: passend zum Bildschirm)",
       tracker: "Mein Standort aus (Standard: eigene Person)",
@@ -60,6 +62,7 @@ const TEXT = {
     myLocation: "My location",
     germany: "Germany",
     recenter: "Back to center",
+    temperatures: "Temperatures",
     move: { left: "Move left", right: "Move right", up: "Move up", down: "Move down" },
     editor: {
       entity: "WetterOnline entity of the location",
@@ -68,6 +71,7 @@ const TEXT = {
       zoom: "Zoom level when opened",
       frame_duration: "Duration per frame",
       autoplay: "Play automatically",
+      temperatures: "Show the temperatures of cities",
       title: "Title",
       map_size: "Map size (e.g. 400px or 60vh; empty: fit the screen)",
       tracker: "My location from (default: own person)",
@@ -118,6 +122,16 @@ const STYLE = `
   }
   .badge { font-size: 0.55em; font-weight: 600; background: #fff; color: #000; border-radius: 6px; padding: 1px 6px; text-shadow: none; }
   .credits { position: absolute; right: 6px; bottom: 4px; color: #fff; font-size: 0.7em; text-shadow: 0 0 2px #000, 0 0 2px #000; }
+  .temps { position: absolute; inset: 0; pointer-events: none; }
+  /* Without a box, a white outline keeps the text readable on any map color. */
+  .temp {
+    position: absolute; transform: translate(-50%, -50%); color: #1f1f1f;
+    font-size: 12px; font-weight: 600; line-height: 15px; white-space: nowrap;
+    text-shadow: 0 0 2px #fff, 0 0 2px #fff, 0 0 1px #fff;
+  }
+  .temp .name { color: #222; font-weight: 500; margin-right: 4px; }
+  .chip.toggle { display: inline-flex; align-items: center; gap: 4px; margin-left: 6px; }
+  .chip.toggle ha-icon { --mdc-icon-size: 16px; }
   .marker {
     position: absolute; width: 14px; height: 14px; margin: -10px 0 0 -10px; border-radius: 50%;
     border: 3px solid #fff; box-shadow: 0 0 3px rgba(0, 0, 0, 0.6); pointer-events: none;
@@ -201,6 +215,7 @@ class WetterOnlineRadarCard extends HTMLElement {
         },
         { name: "frame_duration", selector: { number: { min: 200, max: 5000, step: 100, unit_of_measurement: "ms" } } },
         { name: "autoplay", selector: { boolean: {} } },
+        { name: "temperatures", selector: { boolean: {} } },
         { name: "map_size", selector: { text: {} } },
       ],
       computeLabel: (schema) => text.editor[schema.name] || schema.name,
@@ -211,7 +226,8 @@ class WetterOnlineRadarCard extends HTMLElement {
     if (!config || !config.entity) {
       throw new Error("Please choose a WetterOnline entity");
     }
-    this._config = { frame_duration: 1000, autoplay: true, ...config };
+    this._config = { frame_duration: 1000, autoplay: true, temperatures: true, ...config };
+    this._showTemperatures = this._config.temperatures !== false;
     this._config.places = (Array.isArray(config.places) ? config.places : [])
       .map((place) => ({ ...place, latitude: Number(place.latitude), longitude: Number(place.longitude) }))
       .filter((place) => Number.isFinite(place.latitude) && Number.isFinite(place.longitude));
@@ -291,6 +307,7 @@ class WetterOnlineRadarCard extends HTMLElement {
         <div class="chips centers"></div>
         <div class="viewport">
           <img alt="" />
+          <div class="temps"></div>
           <div class="markers"></div>
           <div class="time" hidden><span class="label"></span><span class="badge" hidden>${text.now}</span></div>
           <div class="credits"></div>
@@ -358,6 +375,8 @@ class WetterOnlineRadarCard extends HTMLElement {
       if (!card || !viewport) return;
       const rest = `${Math.round(card.offsetHeight - viewport.offsetHeight)}px`;
       if (card.style.getPropertyValue("--card-rest") !== rest) card.style.setProperty("--card-rest", rest);
+      // Labels that fit apart on a large map may overlap on a smaller one.
+      if (viewport.offsetWidth !== this._tempsWidth) this._layoutTemperatures();
     });
     this._sizeObserver.disconnect();
     this._sizeObserver.observe(card);
@@ -404,6 +423,7 @@ class WetterOnlineRadarCard extends HTMLElement {
         id: frame.id,
         time: frame.time ? new Date(frame.time) : null,
         url: URL.createObjectURL(blobs[index]),
+        temperatures: frame.temperatures || {},
       }));
       // Decode all frames up front so stepping through them does not flicker.
       await Promise.all(
@@ -432,6 +452,7 @@ class WetterOnlineRadarCard extends HTMLElement {
       this._renderCenters();
       this._renderMarkers();
       this._renderTimeline();
+      this._renderTemperatures();
       this._show(this._index);
       this._syncPlayback();
       if (prefetch) this._prefetch(token, center);
@@ -564,13 +585,15 @@ class WetterOnlineRadarCard extends HTMLElement {
         this._chip(this._periodLabel(period, text), period === this._data.period, () => this._select({ period }))
       )
     );
+    const hasTemperatures = (this._data.cities || []).length > 0;
     layerRow.replaceChildren(
-      ...layers.map((layer) =>
+      ...(layers.length < 2 ? [] : layers).map((layer) =>
         this._chip(text.layers[layer] || layer, layer === this._data.layer, () => this._select({ layer }))
-      )
+      ),
+      ...(hasTemperatures ? [this._temperatureChip(text)] : [])
     );
     periodRow.hidden = periods.length < 2;
-    layerRow.hidden = layers.length < 2;
+    layerRow.hidden = layers.length < 2 && !hasTemperatures;
     root.querySelector(".credits").textContent = this._data.credits || "";
     const zoomLevels = this._data.zoom_levels;
     root.querySelector(".zoom-in").disabled = this._data.zoom >= zoomLevels[zoomLevels.length - 1];
@@ -684,6 +707,75 @@ class WetterOnlineRadarCard extends HTMLElement {
     return chip;
   }
 
+  _temperatureChip(text) {
+    const chip = this._chip(text.temperatures, this._showTemperatures, () => {
+      this._showTemperatures = !this._showTemperatures;
+      chip.classList.toggle("selected", this._showTemperatures);
+      this._layoutTemperatures();
+    });
+    chip.classList.add("toggle");
+    const icon = document.createElement("ha-icon");
+    icon.setAttribute("icon", "mdi:thermometer");
+    chip.prepend(icon);
+    return chip;
+  }
+
+  _renderTemperatures() {
+    const container = this.shadowRoot.querySelector(".temps");
+    const { view, cities = [], city_names_on_map: namesOnMap } = this._data;
+    // Largest cities first, so they keep their label where labels would overlap.
+    this._temps = cities.map((city) => {
+      const [x, y] = worldPixel(city.latitude, city.longitude, view.zoom);
+      const label = document.createElement("div");
+      label.className = "temp";
+      label.style.left = `${((x - view.x) / view.size) * 100}%`;
+      label.style.top = `${((y - view.y) / view.size) * 100}%`;
+      if (!namesOnMap) {
+        const name = document.createElement("span");
+        name.className = "name";
+        name.textContent = city.name;
+        label.append(name);
+      }
+      const value = document.createElement("span");
+      label.append(value);
+      return { id: city.id, label, value };
+    });
+    container.replaceChildren(...this._temps.map((temp) => temp.label));
+    this._layoutTemperatures();
+  }
+
+  _layoutTemperatures() {
+    const container = this.shadowRoot?.querySelector(".temps");
+    if (!container) return;
+    container.hidden = !this._showTemperatures;
+    const temps = this._temps || [];
+    this._tempsWidth = container.offsetWidth;
+    if (!this._showTemperatures || !this._tempsWidth) return;
+    // Show every label, then hide those overlapping a larger city's label.
+    this._updateTemperatures();
+    temps.forEach((temp) => (temp.label.style.visibility = ""));
+    const placed = [];
+    for (const temp of temps) {
+      if (temp.label.hidden) continue;
+      const box = temp.label.getBoundingClientRect();
+      const overlaps = placed.some(
+        (other) =>
+          box.left < other.right + 2 && other.left < box.right + 2 && box.top < other.bottom && other.top < box.bottom
+      );
+      if (overlaps) temp.label.style.visibility = "hidden";
+      else placed.push(box);
+    }
+  }
+
+  _updateTemperatures() {
+    const values = this._frames[this._index]?.temperatures || {};
+    for (const temp of this._temps || []) {
+      const value = values[temp.id];
+      temp.label.hidden = value === undefined;
+      if (value !== undefined) temp.value.textContent = `${value}°`;
+    }
+  }
+
   _periodLabel(period, text) {
     if (text.periods[period]) return text.periods[period];
     const day = new Date(Date.now() + DAY_OFFSETS[period] * 86400000);
@@ -745,6 +837,7 @@ class WetterOnlineRadarCard extends HTMLElement {
     }
     const nowPosition = this._nowPosition();
     root.querySelector(".badge").hidden = nowPosition === null || Math.round(nowPosition) !== index;
+    if (this._showTemperatures) this._updateTemperatures();
     this._update();
   }
 

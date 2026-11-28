@@ -1,13 +1,15 @@
 """Radar projection tests."""
 
+import asyncio
 import base64
+import json
 from datetime import UTC, date, datetime, timedelta
 from io import BytesIO
 from unittest.mock import AsyncMock, MagicMock
 from urllib.parse import parse_qs, urlparse
 
 import pytest
-from aiohttp import ClientSession
+from aiohttp import ClientError, ClientSession
 from freezegun.api import FrozenDateTimeFactory
 from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
@@ -23,6 +25,7 @@ from custom_components.wetteronline.camera import (
     TOMORROW,
     WEATHER,
     ZOOM_LEVELS,
+    CityDirectory,
     MapView,
     RadarRenderer,
     TileCache,
@@ -220,6 +223,9 @@ async def test_card_frames_have_no_footer_and_are_cached() -> None:
         renderer._base_map = AsyncMock(return_value=_base_map())  # type: ignore[method-assign]
         renderer._radar_layers = AsyncMock(  # type: ignore[method-assign]
             return_value=[b"", b"", b"", b""]
+        )
+        renderer._city_directory = AsyncMock(  # type: ignore[method-assign]
+            return_value=CityDirectory({}, {})
         )
 
         frames = await renderer.frames(CURRENT, 8)
@@ -489,3 +495,156 @@ async def test_footer_can_be_drawn_at_the_top() -> None:
     assert bottom_image.getpixel((700, 765)) != map_color
     assert top_image.getpixel((700, 2)) != map_color
     assert top_image.getpixel((700, 765)) == map_color
+
+
+CITY_NAMES = {
+    "WRC01": {"name": "Berlin", "lat": 52.5167, "lon": 13.4, "population": 3426354},
+    "WRC02": {"name": "Potsdam", "lat": 52.4, "lon": 13.0667, "population": 180000},
+    "WRC03": {"name": "München", "lat": 48.1372, "lon": 11.5755, "population": 1488202},
+    "WRC04": {"name": "Bernau", "lat": 52.6797, "lon": 13.5872, "population": 40000},
+}
+CITY_LEVELS = {
+    f"ZL{zoom}": {
+        "WRC01": {"city": [52.5167, 13.4], "tt": [52.56, 13.4]},
+        "WRC02": {"city": [52.4, 13.0667], "tt": [52.44, 13.0667]},
+        "WRC03": {"city": [48.1372, 11.5755], "tt": [48.18, 11.5755]},
+        # Shown only from zoom 9 on.
+        **({"WRC04": {"city": [52.6797, 13.5872], "tt": [52.72, 13.5872]}} if zoom == 9 else {}),
+    }
+    for zoom in (5, 8, 9)
+}
+
+
+def _city_renderer(temperatures: dict[str, float], tiles: TileCache | None = None) -> RadarRenderer:
+    renderer = RadarRenderer(MagicMock(), 52.517, 13.4, WEATHER, "de", tiles=tiles)
+    steps = [
+        {
+            **step,
+            "layers": {
+                "global": {
+                    "cityWeatherData": {
+                        "path": "cityWeatherData",
+                        "ptypPath": "wrglobal/",
+                        "timePath": ["2026", "11", "13", "05", "00", "v46"],
+                        "mnz": 8,
+                    }
+                }
+            },
+        }
+        for step in _hours(datetime(2026, 11, 13, tzinfo=UTC), 2)
+    ]
+    renderer._metadata = AsyncMock(  # type: ignore[method-assign]
+        return_value={"defaultIndex": 0, "timesteps": steps}
+    )
+    renderer._base_map = AsyncMock(return_value=_base_map())  # type: ignore[method-assign]
+    renderer._radar_layers = AsyncMock(  # type: ignore[method-assign]
+        side_effect=lambda step, view: [b""] * len(view.radar_blocks)
+    )
+    renderer._get_json = AsyncMock(  # type: ignore[method-assign]
+        return_value={"cities": {"currentVersion": "v31", "locales": ["de", "en", "default"]}}
+    )
+
+    async def fetch(url: str, max_age: timedelta, keep: bool = True) -> bytes:
+        return json.dumps(CITY_NAMES if "/cities/de.json" in url else CITY_LEVELS).encode()
+
+    renderer._fetch = AsyncMock(side_effect=fetch)  # type: ignore[method-assign]
+    renderer._composite_data = AsyncMock(return_value=temperatures)  # type: ignore[method-assign]
+    return renderer
+
+
+async def test_card_frames_have_the_temperatures_of_the_cities_in_view() -> None:
+    renderer = _city_renderer({"WRC01": -1.5, "WRC02": 2.5, "WRC03": 5.0, "WRC04": 1.0})
+
+    frames = await renderer.frames(CURRENT, 8)
+
+    assert frames is not None
+    # München is outside the view; Bernau is not shown at this zoom level.
+    assert [city.name for city in frames.cities] == ["Berlin", "Potsdam"]
+    assert frames.cities[0].label == (52.56, 13.4)
+    assert frames.temperatures == ({"WRC01": -1, "WRC02": 3},) * 2
+    urls = [call.args[0] for call in renderer._fetch.await_args_list]
+    assert urls == [
+        "https://radar.wo-cloud.com/cities/v31/cities/de.json",
+        "https://radar.wo-cloud.com/cities/v31/levelInfo/de.json",
+    ]
+    descriptors = {call.args[0] for call in renderer._composite_data.await_args_list}
+    view = frames.view
+    blocks = {
+        (2 * x, 2 * y)
+        for x in range(view.origin[0] // 512, (view.origin[0] + 767) // 512 + 1)
+        for y in range(view.origin[1] // 512, (view.origin[1] + 767) // 512 + 1)
+    }
+    assert descriptors == {
+        f"t|1;m;0;0|wrglobal/cityWeatherData/2026/11/13/05/00/v46/ZL8/512/{x}_{y}.json"
+        for x, y in blocks
+    }
+
+
+async def test_closer_than_the_data_cities_use_the_blocks_of_its_zoom_level() -> None:
+    renderer = _city_renderer({"WRC01": 0.4, "WRC02": -0.6})
+
+    frames = await renderer.frames(CURRENT, 9)
+
+    assert frames is not None
+    descriptors = {call.args[0] for call in renderer._composite_data.await_args_list}
+    assert descriptors
+    assert all("/ZL8/512/" in descriptor for descriptor in descriptors)
+    # Berlin's zoom-8 block.
+    assert any(descriptor.endswith("/ZL8/512/136_82.json") for descriptor in descriptors)
+    assert [city.name for city in frames.cities] == ["Berlin", "Potsdam"]
+    assert frames.temperatures[0] == {"WRC01": 0, "WRC02": -1}
+
+
+async def test_without_city_data_the_card_frames_have_no_temperatures() -> None:
+    renderer = _city_renderer({"WRC01": 1.0})
+    renderer._get_json = AsyncMock(side_effect=ClientError)  # type: ignore[method-assign]
+
+    frames = await renderer.frames(CURRENT, 8)
+
+    assert frames is not None
+    assert len(frames.images) == 2
+    assert frames.cities == ()
+    assert frames.temperatures == ({}, {})
+
+
+async def test_locations_share_the_city_directory() -> None:
+    tiles = TileCache()
+    first = _city_renderer({}, tiles)
+    second = _city_renderer({}, tiles)
+
+    await asyncio.gather(first._city_directory(), second._city_directory())
+    directory = await first._city_directory()
+
+    assert first._fetch.await_count + second._fetch.await_count == 2
+    assert set(directory.levels) == set(ZOOM_LEVELS)
+    assert set(directory.levels[9]) == {"WRC01", "WRC02", "WRC03", "WRC04"}
+    assert directory.levels[6] == {}
+
+
+async def test_composite_data_is_read_from_behind_the_image() -> None:
+    session = MagicMock()
+    response = session.get.return_value.__aenter__.return_value
+    response.raise_for_status = MagicMock()
+    response.read = AsyncMock(return_value=b"RIFF....WEBP" + b'{"WRC01":-1.9}')
+    response.headers = {"X-Custom-Body": "temperature:14:json"}
+    renderer = RadarRenderer(session, 52.517, 13.4)
+
+    assert await renderer._composite_data("t|1;m;0;0|path", "id") == {"WRC01": -1.9}
+    assert await renderer._composite_data("t|1;m;0;0|path", "id") == {"WRC01": -1.9}
+    assert session.get.call_count == 1
+
+    response.headers = {}
+    assert await renderer._composite_data("t|1;m;0;0|other", "id") == {}
+
+
+async def test_cities_come_from_every_block_the_view_reaches_into() -> None:
+    renderer = _city_renderer({})
+    # A view from 500 to 1268 px reaches into the blocks starting at 0, 512, and 1024 px.
+    view = MapView(zoom=8, left=0, top=0, columns=3, rows=3, center=(884, 884), marker=(884, 884))
+
+    await renderer._step_temperatures((await renderer._metadata())["timesteps"][0], view)
+
+    descriptors = sorted(call.args[0] for call in renderer._composite_data.await_args_list)
+    assert [descriptor.rsplit("/", 1)[1] for descriptor in descriptors] == [
+        f"{x}_{y}.json" for x in (0, 2, 4) for y in (0, 2, 4)
+    ]
